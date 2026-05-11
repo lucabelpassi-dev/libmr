@@ -2,6 +2,7 @@
 #define MR_H
 
 #include <sys/types.h> // Per ssize_t
+#include <stdlib.h> // per NULL
 
 // --- TIPI DI DATI PUBBLICI ---
 // valore opaco: rende il framework generico e indipendente dal tipo di dati che mapper e reducer devono processare
