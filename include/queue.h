@@ -25,6 +25,6 @@ void queue_init(thread_queue_t *q); // prepara il terreno: azzera i puntatori e 
 void queue_push(thread_queue_t *q, mr_value_t value); // pusha un dato in fondo alla coda e e fa cnd_signal per svegliare almeno un worker che stava dormendo
 bool queue_pop(thread_queue_t *q, mr_value_t *out_value); // tenta di prendere un dato. se non c'è, dorme. se la coda è chiusa, ritorna false
 void queue_close(thread_queue_t *q); // chiude la coda: imposta is_closed a true, e lancia un cnd_broadcast() per svegliare tutti i worker che stanno dormendo, così quando si svegliano vedono che is_closed è true e capiscono che è finito il lavoro e possono uscire
-void queue_destroy(thread_queue_t *q); // pulizia: distrugge mutex e condition variables. non libera la memoria, fixare:
+void queue_destroy(thread_queue_t *q); // pulizia: distrugge mutex e condition variables. ATTENZIONE: non libera la memoria dei nodi, si farà mano a mano con la pop della coda
 
 #endif // QUEUE_H
