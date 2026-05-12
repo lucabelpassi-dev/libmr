@@ -1,47 +1,42 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L -I./include -pthread
-
-# Strumento per creare la libreria (Archiver)
 AR = ar
-# rcs = replace (aggiorna i file), create (crea l'archivio), sort (crea un indice veloce)
 ARFLAGS = rcs
 
-# Cartelle
 SRC_DIR = src
 BUILD_DIR = build
 LIB_DIR = lib
-TEST_DIR = tests
+EXAMPLES_DIR = examples
+TESTS_DIR = tests
 
 SRCS = $(wildcard $(SRC_DIR)/*.c)
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
-
-# Il nostro obiettivo finale
 TARGET = $(LIB_DIR)/libmr.a
 
-.PHONY: all clean test
+.PHONY: all lib examples test clean
 
-all: $(TARGET)
+# Default: libreria + esempi (così `make` da solo produce qualcosa di eseguibile)
+all: lib examples
+
+lib: $(TARGET)
 
 $(TARGET): $(OBJS)
 	@mkdir -p $(LIB_DIR)
 	$(AR) $(ARFLAGS) $@ $^
-	@echo "✅ Libreria $@ creata con successo!"
+	@echo "✅ Libreria $@ creata"
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Pulizia
+examples: lib
+	@$(MAKE) -C $(EXAMPLES_DIR)
+
+test: lib
+	@$(MAKE) -C $(TESTS_DIR) run
+
 clean:
 	rm -rf $(BUILD_DIR)/* $(LIB_DIR)/*
-	@echo "🧹 Pulizia completata."
-
-# Test
-test: $(TARGET)
-	@echo "🧪 Esecuzione test..."
-	@if [ -d $(TEST_DIR) ]; then \
-		$(MAKE) -C $(TEST_DIR) run; \
-	else \
-		echo "⚠️  Cartella $(TEST_DIR)/ non esiste ancora — placeholder"; \
-	fi
-
+	@$(MAKE) -C $(EXAMPLES_DIR) clean 2>/dev/null || true
+	@$(MAKE) -C $(TESTS_DIR) clean 2>/dev/null || true
+	@echo "🧹 Pulizia completata"
