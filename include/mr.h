@@ -2,9 +2,19 @@
 #define MR_H
 
 #include <stddef.h>
-#include <stdbool.h>
 
-/* Riga logica del file (passata al mapper) */
+/* Handle opaco di una elaborazione */
+typedef struct mr *mr_t;
+
+/* Attributi: struct VALORE, completamente definita */
+typedef struct {
+    size_t mapper_threads;
+    size_t reducer_threads;
+    size_t queue_size;        /* capacità code interne, NON pipe */
+    const char *log_file;     /* NULL = default ragionevole */
+} mr_attr_t;
+
+/* Riga logica passata al mapper */
 typedef struct {
     const char *file_name;
     size_t file_name_len;
@@ -13,48 +23,61 @@ typedef struct {
     size_t line_len;
 } mr_file_line_t;
 
-/* Valore opaco: sequenza di byte di lunghezza nota, NON stringa C */
+/* Valore opaco: byte di lunghezza nota, NON stringa C */
 typedef struct {
     const void *data;
     size_t size;
 } mr_value_t;
 
-/* Attributi del framework (definiti dentro src/, qui solo forward-decl) */
-typedef struct mr_attr mr_attr_t;
+/* Callback di emit (fornite dal framework alle funzioni utente) */
+typedef int (*mr_emit_pair_t)(
+    const char *token,
+    const void *value,
+    size_t value_size,
+    void *emit_arg
+);
 
-/* Callback di emit fornite dal framework alle funzioni utente */
-typedef void (*mr_emit_pair_fn)(const char *token,
-                                const void *value, size_t value_len,
-                                void *emit_arg);
-typedef void (*mr_emit_result_fn)(const void *result, size_t result_len,
-                                  void *emit_arg);
+typedef int (*mr_emit_result_t)(
+    const char *token,
+    const void *result,
+    size_t result_size,
+    void *emit_arg
+);
 
 /* Funzioni utente */
-typedef void (*mr_mapper_fn)(const mr_file_line_t *line,
-                             void *user_data,
-                             mr_emit_pair_fn emit, void *emit_arg);
-typedef void (*mr_reducer_fn)(const char *token,
-                              const mr_value_t *values, size_t values_count,
-                              void *user_data,
-                              mr_emit_result_fn emit, void *emit_arg);
+typedef int (*mr_mapper_t)(
+    const mr_file_line_t *line,
+    mr_emit_pair_t emit,
+    void *emit_arg,
+    void *user_arg
+);
 
-/* Tipo opaco */
-typedef struct mr_context *mr_t;
+typedef int (*mr_reducer_t)(
+    const char *token,
+    const mr_value_t *values,
+    size_t values_count,
+    mr_emit_result_t emit,
+    void *emit_arg,
+    void *user_arg
+);
 
-/* Attributi */
-mr_attr_t *mr_attr_create(void);
-void mr_attr_destroy(mr_attr_t *attr);
-int mr_attr_set_mapper_threads(mr_attr_t *attr, int n);
-int mr_attr_set_reducer_threads(mr_attr_t *attr, int n);
-int mr_attr_set_queue_size(mr_attr_t *attr, int n);
+/* Gestione attributi */
+int mr_attr_init(mr_attr_t *attr);
+int mr_attr_destroy(mr_attr_t *attr);
+int mr_attr_set_mapper_threads(mr_attr_t *attr, size_t n);
+int mr_attr_set_reducer_threads(mr_attr_t *attr, size_t n);
+int mr_attr_set_queue_size(mr_attr_t *attr, size_t n);
 int mr_attr_set_log_file(mr_attr_t *attr, const char *path);
 
-/* API principale */
-int mr_create(mr_t *mr, const mr_attr_t *attr,
-              mr_mapper_fn mapper, mr_reducer_fn reducer,
-              void *user_data);
+/* Lifecycle del framework */
+int mr_create(
+    mr_t *mr,
+    const mr_attr_t *attr,
+    mr_mapper_t mapper,
+    mr_reducer_t reducer,
+    void *user_arg
+);
 int mr_start(mr_t mr, const char *input_path, const char *output_path);
-int mr_join(mr_t mr);
-void mr_destroy(mr_t mr);
+int mr_destroy(mr_t mr);
 
 #endif
