@@ -5,7 +5,7 @@ LIB_DIR = ../lib
 LDFLAGS = -L$(LIB_DIR) -pthread
 LDLIBS = -lmr
 
-UNIT_TESTS = test_queue test_protocol
+UNIT_TESTS = test_queue test_protocol test_attr
 
 .PHONY: all clean run
 
@@ -18,10 +18,14 @@ test_queue: test_queue.c ../src/queue.c
 test_protocol: test_protocol.c ../src/protocol.c
 	$(CC) $(CFLAGS) $^ -o $@
 
+test_attr: test_attr.c $(LIB_DIR)/libmr.a
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
 run: all
 	@echo "── Unit tests ──"
 	@./test_queue
 	@./test_protocol
+	@./test_attr
 	@echo "── End-to-end ──"
 	@bash test_e2e.sh
 
