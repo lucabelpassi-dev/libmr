@@ -40,3 +40,8 @@ clean:
 	@$(MAKE) -C $(EXAMPLES_DIR) clean 2>/dev/null || true
 	@$(MAKE) -C $(TESTS_DIR) clean 2>/dev/null || true
 	@echo "🧹 Pulizia completata"
+
+# Rigenerare relazione.pdf dal markdown
+relazione: doc/relazione.md
+	pandoc doc/relazione.md -o doc/relazione.pdf \
+		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
