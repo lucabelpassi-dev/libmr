@@ -4,17 +4,20 @@ LIB_DIR = ../lib
 LDFLAGS = -L$(LIB_DIR) -pthread
 LDLIBS = -lmr
 
-EXAMPLES = wordcount print_output
+EXAMPLES = wordcount print_output smoke
 
 .PHONY: all clean
 
 all: $(EXAMPLES)
 
-# wordcount linka libmr.a — è un consumatore della libreria
+# Esempi che consumano la libreria
 wordcount: wordcount.c $(LIB_DIR)/libmr.a
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
 
-# print_output è standalone (legge solo il formato di output con length-prefix)
+smoke: smoke.c $(LIB_DIR)/libmr.a
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS) $(LDLIBS)
+
+# Standalone (legge solo il formato di output)
 print_output: print_output.c
 	$(CC) $(CFLAGS) $< -o $@
 

@@ -38,6 +38,15 @@ Le funzioni mr_attr_set_* implementano la validazione degli input al perimetro d
 ###  EOF come segnale di fine input  [Specifica §5.1]
 Il framework non utilizza alcun messaggio speciale per segnalare la fine dei dati attraverso la pipeline. La terminazione di una fase viene comunicata sempre tramite la chiusura del lato di scrittura della pipe corrispondente, che provoca la ricezione di EOF (lettura che ritorna 0 byte) sul lato di lettura. La sequenza è la seguente: il processo principale, dopo aver inviato tutte le righe, chiude la sua estremità di scrittura verso il mapper; il thread lettore del mapper riceve EOF e chiude la coda interna; i worker mapper svuotano la coda e terminano; solo dopo la terminazione di tutti i worker il coordinatore del mapper chiude la pipe verso il reducer; il reducer riceve EOF e procede al raggruppamento finale; infine il reducer chiude la pipe verso il processo principale. La correttezza di questo schema dipende crucialmente dal fatto che ogni descrittore di scrittura della pipe mapper→reducer sia chiuso in tutti i processi che non lo usano: anche un solo lato di scrittura lasciato aperto impedirebbe al reducer di vedere EOF e bloccherebbe la pipeline indefinitamente.
 
+### Disciplina dei descrittori dopo fork()
+La correttezza della pipeline dipende in modo critico dalla disciplina con cui ogni processo chiude i descrittori che non utilizza. Prima della prima fork() esistono sei descrittori (due per ciascuna delle tre pipe), tutti aperti nel processo principale. Dopo le due fork(), ciascuno dei tre processi ne possiede una copia, per un totale di diciotto riferimenti. La regola operativa è: in ogni processo, deve restare aperto solo il sottoinsieme di descrittori effettivamente usato; tutti gli altri devono essere chiusi immediatamente.
+
+- Processo principale: mantiene main_to_mapper[1] (scrittura verso il mapper) e reducer_to_main[0] (lettura dai risultati del reducer). Chiude tutto il resto, inclusi entrambi i lati della pipe mapper_to_reducer.
+- Processo mapper: dopo aver duplicato i propri estremi su STDIN_FILENO e STDOUT_FILENO tramite dup2(), chiude tutti i sei descrittori originali delle pipe più il fd del file di output ereditato dal padre.
+- Processo reducer: analogo al mapper, con i due lati appropriati duplicati su stdin e stdout.
+
+Il caso più insidioso è la pipe mapper_to_reducer nel processo principale: il padre non la usa mai, ma la pipe è stata creata da lui e i suoi due descrittori sono inizialmente aperti nel suo address space. Se anche uno solo dei due venisse lasciato aperto nel padre, il reducer non riceverebbe EOF al termine del lavoro del mapper, perché la pipe avrebbe ancora un riferimento di scrittura "fantasma" nel padre. Il processo reducer resterebbe bloccato in read() indefinitamente. Questa è la forma più comune di deadlock nelle pipeline a tre processi, e nel nostro codice è prevenuta dalla chiusura esplicita di mapper_to_reducer[0] e mapper_to_reducer[1] subito dopo le fork(), accompagnata da un commento di avvertimento.
+
 ## 5. Thread C11 nel mapper e nel reducer
 <!-- Mapper: 1 reader thread + N worker thread.
      Reducer: 1 reader thread + N worker thread + fase di grouping.
@@ -110,3 +119,9 @@ Riga vuota: getline() ritorna n = 1 (solo \\n), strip → line_len = 0. La speci
 File con una sola riga, senza \\n finale: getline() ritorna n = strlen(riga), nessuno strip, viene passata; chiamata successiva → EOF → file successivo o fine input.
 File con \\n finale: nessuna "riga fantasma" dopo il \\n perché getline() ritorna -1 alla chiamata successiva.
 Directory vuota o con soli non-file-regolari: paths_count resta 0, file_input_next ritorna 0 alla prima chiamata.
+### mr.c: prima passata
+Concettualmente la prima passata di mr.c risponde a tre domande operative:
+
+1 - Come si trasforma la struttura di processi prevista in chiamate di sistema concrete? → pipe() x 3, fork() x 2, dup2() per riconnettere stdin/stdout, close() chirurgica di tutto il resto.
+2 - Come si garantisce la propagazione corretta dell'EOF? → chiudendo aggressivamente ogni descrittore non usato in ogni processo. Lasciare aperto un solo lato di una pipe in un processo sbagliato vuol dire deadlock.
+3 - Come si raccoglie l'esito? → waitpid() esplicito sui due PID dei figli, controllo di WIFEXITED/WEXITSTATUS.
