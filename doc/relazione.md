@@ -100,3 +100,12 @@ Puntatori "borrowed": file_input_next riempie un mr_file_line_t con puntatori va
 getline() per la lettura: è POSIX 2008 (abbiamo già _POSIX_C_SOURCE=200809L), gestisce tutti i casi limite della specifica gratuitamente — ultima riga senza \\n, righe vuote, righe arbitrariamente lunghe (rialloca il buffer da sola). Strappiamo solo il \\n finale se presente, come richiesto dalla specifica ("Il carattere di fine riga non fa parte del contenuto logico della riga passato al mapper").
 scandir() con alphasort per le directory: combina enumerazione, filtro (saltiamo ., .. e non-file regolari) e ordinamento lessicografico in una sola chiamata. Determinismo garantito dalla libreria.
 Non è thread-safe: usa stato mutabile interno. Va benissimo perché ha un solo utilizzatore (il main thread del processo principale).
+### Per file_input
+Casi limite gestiti (da menzionare nella relazione)
+Direttamente coperti dalla specifica §4:
+
+File vuoto: prima getline() ritorna -1 con feof, passiamo al file successivo. Se è l'unico file → file_input_next ritorna 0 senza mai produrre una riga.
+Riga vuota: getline() ritorna n = 1 (solo \\n), strip → line_len = 0. La specifica richiede che la riga vuota venga passata al mapper.
+File con una sola riga, senza \\n finale: getline() ritorna n = strlen(riga), nessuno strip, viene passata; chiamata successiva → EOF → file successivo o fine input.
+File con \\n finale: nessuna "riga fantasma" dopo il \\n perché getline() ritorna -1 alla chiamata successiva.
+Directory vuota o con soli non-file-regolari: paths_count resta 0, file_input_next ritorna 0 alla prima chiamata.
