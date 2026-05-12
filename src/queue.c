@@ -12,8 +12,11 @@ void queue_init(thread_queue_t *q) {
 
 // Il Produttore aggiunge un elemento alla coda
 void queue_push(thread_queue_t *q, mr_value_t value) {
-    // 1. Creiamo il nuovo nodo
     q_node_t *new_node = malloc(sizeof(q_node_t));
+    if (new_node == NULL) {
+        perror("queue_push: malloc");
+        exit(EXIT_FAILURE);
+    }
     new_node->data = value;
     new_node->next = NULL;
 
@@ -76,6 +79,28 @@ void queue_close(thread_queue_t *q) {
 
 // Distrugge i lucchetti (da chiamare alla fine di tutto)
 void queue_destroy(thread_queue_t *q) {
+    /* Drena eventuali nodi residui: libera sia il buffer opaco che il nodo */
+    q_node_t *cur = q->head;
+    while (cur != NULL) {
+        q_node_t *next = cur->next;
+        free(cur->data.data);  /* il buffer opaco dentro mr_value_t */
+        free(cur);
+        cur = next;
+    }
+    q->head = q->tail = NULL;
     mtx_destroy(&q->mutex);
     cnd_destroy(&q->cond);
 }
+
+// destroy importante
+/*
+    la coda è un trasportatore. il produttore alloca il buffer, lo "regala" alla coda con push, 
+    il consumatore lo "ritira" con pop e diventa responsabile di liberarlo.
+    In condizioni normali la coda è vuota quando viene distrutta — perfetto.
+    Ma se per qualche motivo viene distrutta non-vuota (terminazione anomala, errore, segnale),
+    nessuno libera quei buffer abbandonati. Il destroy deve quindi farsi carico della pulizia dei
+    "residui": questa è la regola "chi possiede, libera" applicata in modo difensivo.
+    Se invece il prof ti chiede "e i buffer dentro mr_value_t chi li libera in condizioni normali?",
+    la risposta è: il consumatore dopo aver chiamato pop, non la coda. La coda li libera solo come
+    fail-safe in destroy.
+ */

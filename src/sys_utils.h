@@ -9,7 +9,6 @@
 #include <sys/types.h>
 #include <string.h>
 #include <fcntl.h>
-#include <mqueue.h>
 #include <errno.h>
 
 // costanti
@@ -31,17 +30,5 @@
         f_parent; \
     } \
 }while(0)
-
-// funzione di inizializzazione parametri mq
-static inline void mq_init_attr(struct mq_attr *attr, long max_msgs, long msg_size) {
-    if (attr == NULL) return;
-    
-    // Azzera tutto per evitare "sporcizia" nella memoria
-    memset(attr, 0, sizeof(struct mq_attr));
-    
-    attr->mq_maxmsg = max_msgs;
-    attr->mq_msgsize = msg_size;
-    // mq_flags e mq_curmsgs restano a 0 grazie al memset
-}
 
 #endif

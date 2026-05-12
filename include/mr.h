@@ -1,40 +1,60 @@
 #ifndef MR_H
 #define MR_H
 
-#include <sys/types.h> // Per ssize_t
-#include <stdlib.h> // per NULL
+#include <stddef.h>
+#include <stdbool.h>
 
-// --- TIPI DI DATI PUBBLICI ---
-// valore opaco: rende il framework generico e indipendente dal tipo di dati che mapper e reducer devono processare
+/* Riga logica del file (passata al mapper) */
 typedef struct {
-    const void *data; // puntatore a "qualcosa" (può essere un token, una chiave, un valore, ecc.)
-    ssize_t size; // la dimensione di questo qualcosa, in byte
+    const char *file_name;
+    size_t file_name_len;
+    unsigned long line_number;
+    const char *line;
+    size_t line_len;
+} mr_file_line_t;
+
+/* Valore opaco: sequenza di byte di lunghezza nota, NON stringa C */
+typedef struct {
+    const void *data;
+    size_t size;
 } mr_value_t;
 
-// Attributi del framework
-typedef struct mr_attr {
-    int mapper_threads;
-    int reducer_threads;
-    // (Aggiungeremo altra roba se il PDF lo chiederà)
-} mr_attr_t;
+/* Attributi del framework (definiti dentro src/, qui solo forward-decl) */
+typedef struct mr_attr mr_attr_t;
 
-// Tipo opaco che rappresenta l'intero framework
-typedef struct mr_context* mr_t;
+/* Callback di emit fornite dal framework alle funzioni utente */
+typedef void (*mr_emit_pair_fn)(const char *token,
+                                const void *value, size_t value_len,
+                                void *emit_arg);
+typedef void (*mr_emit_result_fn)(const void *result, size_t result_len,
+                                  void *emit_arg);
 
-// Puntatori a funzione (Callback) per mapper e reducer
-typedef void (*mr_mapper_fn)(mr_value_t token);
-typedef void (*mr_reducer_fn)(/* parametri del reducer da definire */);
+/* Funzioni utente */
+typedef void (*mr_mapper_fn)(const mr_file_line_t *line,
+                             void *user_data,
+                             mr_emit_pair_fn emit, void *emit_arg);
+typedef void (*mr_reducer_fn)(const char *token,
+                              const mr_value_t *values, size_t values_count,
+                              void *user_data,
+                              mr_emit_result_fn emit, void *emit_arg);
 
-// --- FUNZIONI DEL FRAMEWORK ---
-//quanti thread vuoi (quanti mapper, quanti reducer)? Se non vuoi specificare, lascia tutto a 1 (default)
-void mr_attr_init(mr_attr_t *attr); 
-void mr_attr_set_mapper_threads(mr_attr_t *attr, int num_threads);
-void mr_attr_set_reducer_threads(mr_attr_t *attr, int num_threads);
+/* Tipo opaco */
+typedef struct mr_context *mr_t;
 
-// inizializzazione del framework: crea un nuovo contesto, con gli attributi specificati, e registra le funzioni di mapper e reducer
-void mr_create(mr_t *mr, mr_attr_t *attr, mr_mapper_fn mapper, mr_reducer_fn reducer, void *user_data);
-void mr_start(mr_t mr, const char *input_file, const char *output_file); // creo processi, apro le pipe, lancio i thread e inizio a pompare i dati dal file in input_file, attraverso i mapper e i reducer, fino al file output_file
-void mr_join(mr_t mr, int *status); // aspetto che tutti i thread abbiano finito, e restituisco un codice di uscita (0 se tutto è andato bene, -1 se c'è stato un errore)
-void mr_destroy(mr_t mr); // pulizia per non lasciare memory leak: chiudo pipe, distruggo mutex e libero la memoria allocata per il contesto
+/* Attributi */
+mr_attr_t *mr_attr_create(void);
+void mr_attr_destroy(mr_attr_t *attr);
+int mr_attr_set_mapper_threads(mr_attr_t *attr, int n);
+int mr_attr_set_reducer_threads(mr_attr_t *attr, int n);
+int mr_attr_set_queue_size(mr_attr_t *attr, int n);
+int mr_attr_set_log_file(mr_attr_t *attr, const char *path);
 
-#endif // MR_H
+/* API principale */
+int mr_create(mr_t *mr, const mr_attr_t *attr,
+              mr_mapper_fn mapper, mr_reducer_fn reducer,
+              void *user_data);
+int mr_start(mr_t mr, const char *input_path, const char *output_path);
+int mr_join(mr_t mr);
+void mr_destroy(mr_t mr);
+
+#endif
