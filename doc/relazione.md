@@ -70,10 +70,10 @@ distinti, ciascuno con un ruolo ben preciso:
 I tre processi sono connessi da tre pipe unidirezionali:
 
 ```
-   main           mapper          reducer
-    │  righe       │  coppie       │  risultati
-    │ ───────────► │ ───────────►  │ ──────────►  main (output file)
-    │              │               │
+   main             mapper             reducer
+    |                |                   |
+    | --- righe ---> | --- coppie -----> | --- risultati ---> main (file output)
+    |                |                   |
 ```
 
 Questa disposizione è quella prescritta dalla specifica al §5 e ha tre
