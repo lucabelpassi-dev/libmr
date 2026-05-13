@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include "queue.h"
 
@@ -83,7 +84,7 @@ void queue_destroy(thread_queue_t *q) {
     q_node_t *cur = q->head;
     while (cur != NULL) {
         q_node_t *next = cur->next;
-        free(cur->data.data);  /* il buffer opaco dentro mr_value_t */
+        free((void *)cur->data.data);  /* cast: la queue e' proprietaria del buffer */
         free(cur);
         cur = next;
     }

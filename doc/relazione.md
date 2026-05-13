@@ -87,8 +87,12 @@ Più thread worker possono produrre coppie contemporaneamente, ma la pipe verso 
      Costo asintotico per insert e iter.
      Come si costruisce il vettore di mr_value_t per il reducer.
      Ordine lessicografico finale per determinismo dell'output. -->
+### Struttura dati di raggruppamento: scelta e tradeoff [Specifica §6.2, §8]
+La struttura dati che raggruppa i valori per token nel processo reducer è una tabella di hash con catene lineari (linked-list chaining). L'inserimento richiede tempo costante ammortizzato O(1) — calcolo dell'hash + ricerca lineare nella catena della casella, che in pratica è cortissima se il numero di caselle è ben dimensionato rispetto al numero di token distinti. Un'alternativa considerata era una struttura ordinata (es. albero AVL o array ordinato), che avrebbe avuto inserimenti in O(log N) e iterazione naturalmente ordinata; è stata scartata perché l'inserimento è l'operazione dominante (chiamata una volta per ogni coppia in arrivo, potenzialmente milioni) mentre l'ordinamento dei token è richiesto solo una volta a fine input. La tabella di hash + ordinamento finale O(N log N) ha quindi un costo totale equivalente nelle costanti più favorevoli del caso comune.
+Il modulo implementa due fasi distinte, con un passaggio esplicito di "chiusura" fra le due. Durante l'inserimento i valori associati a un token vengono accumulati in una lista concatenata, perché aggiungerne uno in coda costa O(1) e non richiede di pre-conoscere quanti valori arriveranno; al momento del finalize la lista viene "appiattita" in un array contiguo mr_value_t[] — esattamente la forma richiesta dalla firma di mr_reducer_t. Il finalize esegue inoltre un singolo qsort di tutti i puntatori alle entry, ordinandoli lessicograficamente per token: questa è la sorgente del determinismo dell'output, requisito esplicito della specifica §8.
+Il numero di caselle della tabella è fissato alla creazione (non c'è auto-resize). Per i carichi tipici del progetto questo è sufficiente; un'estensione futura potrebbe introdurre un raddoppio automatico quando il fattore di carico supera una soglia.
 
-## 9. Formato del file di output
+## 9. Formato del file di output 
 <!-- Record length-prefixed: token_len, token, result_len, result.
      Ordinamento lessicografico per token = determinismo.
      Programma ausiliario print_output per leggere il formato in chiaro. -->
