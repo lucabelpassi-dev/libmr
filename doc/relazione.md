@@ -1,160 +1,465 @@
-# Framework libmr — Relazione di progetto
-**Autore:** Luca Belpassi — **Corso:** Laboratorio II A — **Data:** 26/05/26
+---
+title: "libmr — un framework MapReduce a singolo nodo in C"
+subtitle: "Relazione del progetto, corso Laboratorio II A — A.A. 2025/2026"
+date: "Maggio 2026"
+documentclass: article
+fontsize: 11pt
+geometry: margin=2.5cm
+toc: true
+toc-depth: 2
+numbersections: true
+---
 
-## 1. Introduzione
-<!-- Cosa fa libmr in 1 paragrafo. Riferimento concettuale a MapReduce.
-     Cosa NON fa: no distribuzione, no rete, no exec, no shared memory. -->
+\newpage
 
-## 2. Architettura generale
-<!-- Diagramma a tre processi (main → mapper → reducer → main).
-     Pipeline locale, pipe come unico canale IPC del flusso dati.
-     Concetto del "corriere cieco": valori opachi length-prefixed. -->
-### Il framework come "corriere cieco" [Specifica §3, §10]
-Il framework libmr adotta un modello di trasporto opaco dei dati: una volta che il programma utente fornisce un valore associato a un token, il framework non interpreta mai i byte trasportati. Questa scelta riflette il principio fondamentale di MapReduce, in cui la logica applicativa è interamente delegata alle funzioni mapper e reducer fornite dal programma utente. Concretamente, il framework non assume che i valori siano stringhe C terminate da \0, non li confronta, non ne calcola dimensioni con strlen, non li stampa. Ogni valore è una sequenza di byte di lunghezza nota, comunicata sempre insieme alla sua lunghezza. L'unica eccezione è il token di raggruppamento, che per contratto è una stringa C valida composta da soli caratteri alfanumerici ASCII e viene usato come chiave di partizionamento.
+# Introduzione
 
-## 3. Interfaccia pubblica
-<!-- Tour rapido di mr.h.
-     Asimmetria mr_attr_t (struct value, esposta) vs mr_t (opaco):
-       espone configurazione, nascondi macchinario.
-     Regole di ownership di §A.1: emit deve copiare prima di ritornare,
-       puntatori validi solo durante la callback.
-     Convenzione 0/-1 + errno. -->
-### mr_attr_t esposto vs mr_t opaco [Specifica §A]
-L'interfaccia pubblica adotta un'asimmetria deliberata fra i due tipi principali. La struttura mr_attr_t è completamente esposta nell'header: è una semplice aggregazione di parametri di configurazione (numero di thread mapper e reducer, dimensione delle code, nome del file di log) che l'utente può dichiarare come variabile locale sullo stack. Al contrario, mr_t è opaco: l'header dichiara solo typedef struct mr *mr_t; mentre la definizione della struct mr vive esclusivamente in src/mr.c. La regola implicita è "espone la configurazione, nascondi il macchinario": la configurazione è composta da dati passivi che l'utente legittimamente legge e scrive, mentre la sessione contiene puntatori a callback, descrittori di file, PID dei processi figli — stato che deve restare invisibile e protetto da modifiche accidentali.
+Il progetto realizza `libmr`, una libreria statica in C che implementa il
+paradigma di calcolo *MapReduce* confinato a un singolo nodo, secondo la
+specifica del corso. La libreria espone al programma cliente un'interfaccia
+minimale — la struttura `mr_attr_t` per la configurazione, il tipo opaco
+`mr_t` per la sessione, e quattro funzioni: `mr_attr_init`, `mr_create`,
+`mr_start`, `mr_destroy` — e nasconde dietro questa interfaccia
+un'architettura interna a tre processi cooperanti, comunicanti attraverso
+*pipe* POSIX, ciascuno multithreaded mediante i *thread* del C11.
 
-### emit deve copiare prima di ritornare [Specifica §A.1]
-Il contratto specificato in §A.1 della specifica impone un vincolo preciso alla funzione emit: i dati passati dall'utente (token e valore) devono essere copiati dal framework prima che emit ritorni. Questo permette all'utente di passare a emit buffer temporanei (anche sullo stack) senza preoccuparsi della loro persistenza. Il framework adotta la strategia di scrittura sincrona: dentro emit la coppia viene serializzata e scritta direttamente sulla pipe verso il reducer tramite writen. Al ritorno della write il kernel ha già copiato i byte nel buffer interno della pipe, quindi la copia richiesta dal contratto è di fatto garantita dal sistema operativo. Il costo è che emit può bloccare se la pipe è piena, ma questo non viola la specifica e mantiene la complessità del framework bassa. L'alternativa era introdurre un buffer applicativo intermedio, scelta scartata per inutile complicazione.
+La filosofia di design adottata è di **scatola nera trasparente**: il
+chiamante fornisce due funzioni di callback (la *map function* e la *reduce
+function*) e i percorsi del file di input e di quello di output; il framework
+si occupa di tutto il resto — `fork`, creazione delle pipe, distribuzione del
+lavoro fra i thread, raggruppamento dei valori per chiave, serializzazione
+del file di output, logging. Il chiamante riceve il controllo soltanto a
+esecuzione conclusa. Non vede mai i processi figli, non maneggia mai i
+descrittori delle pipe, non sceglie un thread sul quale girare: scrive
+funzioni pure di trasformazione dati e lascia che il framework le orchestri.
 
-### mr_start bloccante, niente mr_join [Specifica §A]
-La specifica definisce mr_start() come chiamata bloccante: restituisce il controllo al chiamante solo quando l'intera elaborazione è terminata e il file di output è stato prodotto, oppure quando si verifica un errore. Non esiste una funzione separata mr_join(): il waitpid() sui processi figli mapper e reducer avviene internamente a mr_start(), dopo aver chiuso la pipe verso il mapper e raccolto tutti i risultati dalla pipe del reducer. Il programma utente ha quindi un modello mentale lineare e sincrono: alla riga successiva alla mr_start() può assumere che il file di output esista e sia completo (oppure leggere errno per scoprire cosa è andato storto).
-Le funzioni mr_attr_set_* implementano la validazione degli input al perimetro dell'API: rifiutano valori non validi (zero per i conteggi di thread o per la dimensione delle code) ritornando -1 con errno = EINVAL. Questo principio — controllare gli argomenti il prima possibile, all'ingresso del framework — semplifica il codice interno, che può assumere invarianti (es. "il numero di thread mapper è sempre >= 1") senza ulteriori controlli. La funzione mr_attr_set_log_file adotta inoltre la convenzione di deep copy al confine: duplica internamente la stringa passata dall'utente con strdup, così l'utente può liberare o riusare il proprio buffer subito dopo la chiamata. Simmetricamente, mr_attr_destroy libera questa copia. La proprietà della stringa è dell'oggetto mr_attr_t, e il const dichiarato nel typedef serve a impedire modifiche dall'esterno, non a negarne la proprietà interna.
+Questo schema di responsabilità è quanto la specifica richiede al §1 e al §3,
+e ha un'implicazione importante sulla forma delle *callback*: queste vedono
+solo dati, non flussi, non descrittori, non strutture di sincronizzazione. Il
+loro contratto è specificato in modo preciso nell'header pubblico
+(`include/mr.h`), inclusa in particolare la regola **`emit` deve copiare il
+contenuto del messaggio prima di restituire il controllo al chiamante**: una
+clausola apparentemente sottile ma decisiva, sulla quale è costruito tutto il
+modello di proprietà dei buffer.
 
-## 4. Organizzazione dei processi
-<!-- fork() + pipe() + dup2() + waitpid().
-     Schema delle tre pipe e dei loro lati read/write.
-     Ordine critico: pipe → fork(mapper) → fork(reducer) → dup2 → close.
-     Perché chiudere i fd "fantasma" nei processi sbagliati = blocco su EOF.
-     EOF come segnale di fine input (no messaggi speciali). -->
-###  EOF come segnale di fine input  [Specifica §5.1]
-Il framework non utilizza alcun messaggio speciale per segnalare la fine dei dati attraverso la pipeline. La terminazione di una fase viene comunicata sempre tramite la chiusura del lato di scrittura della pipe corrispondente, che provoca la ricezione di EOF (lettura che ritorna 0 byte) sul lato di lettura. La sequenza è la seguente: il processo principale, dopo aver inviato tutte le righe, chiude la sua estremità di scrittura verso il mapper; il thread lettore del mapper riceve EOF e chiude la coda interna; i worker mapper svuotano la coda e terminano; solo dopo la terminazione di tutti i worker il coordinatore del mapper chiude la pipe verso il reducer; il reducer riceve EOF e procede al raggruppamento finale; infine il reducer chiude la pipe verso il processo principale. La correttezza di questo schema dipende crucialmente dal fatto che ogni descrittore di scrittura della pipe mapper→reducer sia chiuso in tutti i processi che non lo usano: anche un solo lato di scrittura lasciato aperto impedirebbe al reducer di vedere EOF e bloccherebbe la pipeline indefinitamente.
+Nelle pagine che seguono descriviamo le scelte di progettazione adottate per
+ognuno dei livelli del framework, partendo dall'architettura generale (§2) e
+scendendo poi nei processi e nei loro descrittori (§3, §4), nei thread e
+nelle loro sincronizzazioni (§5, §6), nei formati di scambio fra processi e
+verso il file di output (§7, §8), nel sistema di logging (§9) e nel
+collaudo (§10). La sezione conclusiva ricapitola le decisioni più rilevanti
+ai fini della discussione orale.
 
-### Disciplina dei descrittori dopo fork()
-La correttezza della pipeline dipende in modo critico dalla disciplina con cui ogni processo chiude i descrittori che non utilizza. Prima della prima fork() esistono sei descrittori (due per ciascuna delle tre pipe), tutti aperti nel processo principale. Dopo le due fork(), ciascuno dei tre processi ne possiede una copia, per un totale di diciotto riferimenti. La regola operativa è: in ogni processo, deve restare aperto solo il sottoinsieme di descrittori effettivamente usato; tutti gli altri devono essere chiusi immediatamente.
+\newpage
 
-- Processo principale: mantiene main_to_mapper[1] (scrittura verso il mapper) e reducer_to_main[0] (lettura dai risultati del reducer). Chiude tutto il resto, inclusi entrambi i lati della pipe mapper_to_reducer.
-- Processo mapper: dopo aver duplicato i propri estremi su STDIN_FILENO e STDOUT_FILENO tramite dup2(), chiude tutti i sei descrittori originali delle pipe più il fd del file di output ereditato dal padre.
-- Processo reducer: analogo al mapper, con i due lati appropriati duplicati su stdin e stdout.
+# Architettura generale
 
-Il caso più insidioso è la pipe mapper_to_reducer nel processo principale: il padre non la usa mai, ma la pipe è stata creata da lui e i suoi due descrittori sono inizialmente aperti nel suo address space. Se anche uno solo dei due venisse lasciato aperto nel padre, il reducer non riceverebbe EOF al termine del lavoro del mapper, perché la pipe avrebbe ancora un riferimento di scrittura "fantasma" nel padre. Il processo reducer resterebbe bloccato in read() indefinitamente. Questa è la forma più comune di deadlock nelle pipeline a tre processi, e nel nostro codice è prevenuta dalla chiusura esplicita di mapper_to_reducer[0] e mapper_to_reducer[1] subito dopo le fork(), accompagnata da un commento di avvertimento.
+`libmr` esegue una computazione MapReduce facendo cooperare tre processi
+distinti, ciascuno con un ruolo ben preciso:
 
-## 5. Thread C11 nel mapper e nel reducer
-<!-- Mapper: 1 reader thread + N worker thread.
-     Reducer: 1 reader thread + N worker thread + fase di grouping.
-     Perché fork() PRIMA dei thread (stato dei mutex non riproducibile).
-     Uso di mtx_t, cnd_t, thrd_create, thrd_join. -->
-### Ordine fork() → thread (mai il contrario) [Specifica §5]
-Un vincolo critico della specifica è che fork() non deve mai essere chiamato da un processo che abbia già creato thread C11 attivi. Il motivo è che fork() duplica solo il thread chiamante: nei processi figli gli altri thread "scompaiono", lasciando lo stato delle primitive di sincronizzazione (mutex, condition variable) in una configurazione inconsistente. Un mutex bloccato da un thread ora invisibile resterebbe bloccato per sempre nel figlio; una condition variable potrebbe avere worker in attesa di un signal che non arriverà mai. Per questo il framework realizza l'intera struttura dei processi prima di creare qualunque thread: il processo principale crea le pipe, esegue le due fork(), e solo a quel punto ciascun processo (principale, mapper, reducer) crea i propri thread C11 nello spazio di indirizzamento separato che gli compete.
+- il **processo principale** (*main*) legge il file di input riga per riga e
+  spedisce le righe al processo mapper; al termine raccoglie i record
+  prodotti dal processo reducer e li scrive sul file di output;
+- il **processo mapper** riceve righe dal main, le distribuisce ai propri
+  *worker thread* che invocano la *map function* fornita dall'utente; le
+  coppie chiave–valore generate vengono spedite al processo reducer;
+- il **processo reducer** riceve le coppie dal mapper, le raggruppa per
+  chiave, e per ciascun gruppo invoca la *reduce function* fornita
+  dall'utente; i risultati vengono spediti al processo main.
 
-### La funzione emit e il suo emit_arg "magico" [Specifica §A]
-La firma di mr_mapper_t definita dalla specifica include un parametro void *emit_arg che il framework passa alla callback utente insieme al puntatore alla funzione emit. Il parametro è opaco per l'utente: non deve interpretarlo né modificarlo, lo passa pari pari quando richiama emit. È invece il framework che, dentro l'implementazione di emit, sa che emit_arg è un puntatore alla propria struct mapper_state, e lo cast'a per accedere al contesto di esecuzione (file descriptor della pipe verso il reducer, mutex di scrittura, eventuale stato per il logging). Il pattern è una forma classica di iniezione di contesto in una callback in C, equivalente concettualmente alla this-pointer dei linguaggi orientati agli oggetti: la callback non sa nulla del framework, ma porta con sé un riferimento opaco al proprio "ambiente" che, ritornato indietro al framework, gli permette di riprendere il controllo coerente del proprio stato.
+I tre processi sono connessi da tre pipe unidirezionali:
 
-### Work stealing dinamico con contatore atomico
-La distribuzione del lavoro fra i worker non è statica (es. blocchi contigui di entry per worker) ma dinamica: tutte le entry sono in un unico array condiviso, e ciascun worker, quando è libero, esegue atomic_fetch_add(&next_idx, 1) per prenotare la prossima entry disponibile. Questo schema, noto come work stealing dinamico, garantisce un bilanciamento del carico anche quando il costo di elaborazione delle entry è fortemente eterogeneo: se un'entry richiede molto più lavoro di un'altra (es. valori per quel token particolarmente numerosi), i worker liberi continuano a prelevare entry rapide senza attendere il worker "lento". Il costo è una singola operazione atomica per prelievo — molto inferiore a quello di un mutex — e nessuna logica di partizionamento a priori.
+```
+   main           mapper          reducer
+    │  righe       │  coppie       │  risultati
+    │ ───────────► │ ───────────►  │ ──────────►  main (output file)
+    │              │               │
+```
 
-## 6. Code interne e sincronizzazione
-<!-- Pattern producer-consumer con mtx + cnd.
-     is_closed + cnd_broadcast: come si sveglia tutti i worker dormienti.
-     Ownership dei buffer attraverso la coda (chi alloca, chi libera).
-     Fail-safe nel destroy se la coda non è vuota. -->
-### is_closed + cnd_broadcast [Specifica §6, §6.1]
-Le code interne (src/queue.c) implementano un classico schema produttore-consumatore sincronizzato con mtx_t per la mutua esclusione e cnd_t per le condizioni di risveglio. Per gestire la terminazione naturale, ogni coda espone un flag is_closed e una funzione queue_close(). Quando il produttore (es. il thread lettore della pipe) ha finito, chiama queue_close() che imposta il flag a true e invoca cnd_broadcast per svegliare tutti i worker eventualmente in attesa. I worker, al risveglio, verificano nel ciclo while (head == NULL && !is_closed) cnd_wait(...); se trovano la coda vuota e chiusa, ritornano "no more work" al chiamante e terminano. L'uso di cnd_broadcast invece di cnd_signal in questo punto è essenziale: con signal solo un worker verrebbe svegliato, gli altri resterebbero dormienti in eterno.
+Questa disposizione è quella prescritta dalla specifica al §5 e ha tre
+proprietà strutturali importanti.
 
-### Ownership dei buffer attraverso la coda [Specifica §6]
-Per i buffer trasportati dalla coda vale la regola "chi produce alloca, chi consuma libera": il produttore alloca dinamicamente il buffer del dato, lo "regala" alla coda tramite queue_push, e il consumatore lo riceve da queue_pop diventando responsabile della sua deallocazione. La coda stessa, in condizioni normali, è solo un trasportatore e non possiede mai i buffer in modo duraturo. Tuttavia, in caso di terminazione anomala, la coda potrebbe essere distrutta non vuota; per evitare leak silenziosi, queue_destroy() scansiona la lista residua e libera sia i nodi sia i buffer in essi contenuti. Questa è una rete di sicurezza difensiva: in flusso normale non viene mai esercitata.
+**Isolamento di errore.** Un crash del mapper non corrompe lo stato del main
+o del reducer: la rispettiva pipe in lettura segnala EOF e il processo che la
+sta leggendo termina ordinatamente. La specifica al §5.1 chiede esattamente
+questo comportamento.
 
-## 7. Formato dei messaggi sulle pipe [Specifica §6]
-<!-- Tre tipi di messaggio:
-       main→mapper: header file_line + bytes (file_name, line)
-       mapper→reducer: header pair + bytes (token, value)
-       reducer→main: header result + bytes (token, result)
-     readn/writen per letture/scritture parziali.
-     Validazione delle lunghezze (no negativi, no oltre i limiti). -->
-### Length-prefix obbligatorio [Specifica §3, §7, §10]
-Il protocollo binario sulle pipe è length-prefixed: ogni messaggio è preceduto da un header a campi di lunghezza fissa che dichiara le dimensioni dei payload variabili successivi. Questa scelta è imposta dalla natura opaca dei valori intermedi: come stabilito in §3 della specifica, un processed_token può contenere qualunque sequenza di byte, inclusi byte nulli. Un protocollo basato su delimitatori testuali sarebbe ambiguo: un byte zero nel payload verrebbe scambiato per un separatore. Il length-prefix elimina alla radice ogni ambiguità: si legge l'header, da esso si ricava esattamente quanti byte costituiscono il payload, e si leggono tutti e soli quei byte. Poiché le pipe possono effettuare letture e scritture parziali, sia le ricezioni sia le trasmissioni passano per le funzioni ausiliarie readn e writen, che iterano finché tutti i byte richiesti non sono stati trasferiti (gestendo correttamente EINTR). Le lunghezze contenute negli header sono valori int validati prima della conversione a size_t: non sono accettati valori negativi né valori superiori a un limite documentato, a tutela di messaggi malformati.
+**Segnalazione di terminazione attraverso EOF.** La fine dell'input non viene
+notificata con un messaggio speciale di "fine flusso", ma con la chiusura
+*ordinata* del lato di scrittura della pipe corrispondente. Quando il processo
+main ha finito di leggere l'input, chiude il lato di scrittura della pipe
+`main_to_mapper`; il reader del mapper riceve `read(...) == 0` e propaga il
+segnale verso i suoi worker, che a loro volta terminano; il mapper chiude il
+lato di scrittura della pipe `mapper_to_reducer`; e così via fino al main, che
+rileva la chiusura dell'ultima pipe e fa `waitpid` sui figli.
 
-### Sincronizzazione delle scritture concorrenti sulla pipe [Specifica §6.1]
-Più thread worker possono produrre coppie contemporaneamente, ma la pipe verso il reducer è una risorsa condivisa singola. Senza sincronizzazione, due thread che scrivono insieme rischiano di interlacciare i propri byte sulla pipe: l'intestazione di un messaggio potrebbe essere seguita dal payload di un altro, corrompendo il protocollo. POSIX garantisce l'atomicità di una singola write() solo per dimensioni inferiori a PIPE_BUF (4096 byte su Linux); ma poiché la funzione emit esegue tre write() separate (intestazione, token, valore), l'atomicità del kernel non basta. Il framework usa quindi un mtx_t C11 (out_mutex in struct mapper_state) che ogni worker acquisisce prima di scrivere e rilascia subito dopo, rendendo l'intera operazione di emit una sezione critica indivisibile rispetto agli altri worker.
+**Determinismo del file di output.** Pur essendo il calcolo *parallelo* a più
+livelli (più worker nel mapper, più worker nel reducer), il file di output è
+**deterministico**: esecuzioni successive sullo stesso input producono
+file byte-per-byte identici, come richiesto dalla specifica §8. Le scelte
+architetturali che garantiscono questa proprietà sono descritte al §8.
 
-## 8. Raggruppamento per token nel reducer
-<!-- Struttura dati: [hash table? sorted array? — DA DECIDERE]
-     Costo asintotico per insert e iter.
-     Come si costruisce il vettore di mr_value_t per il reducer.
-     Ordine lessicografico finale per determinismo dell'output. -->
-### Struttura dati di raggruppamento: scelta e tradeoff [Specifica §6.2, §8]
-La struttura dati che raggruppa i valori per token nel processo reducer è una tabella di hash con catene lineari (linked-list chaining). L'inserimento richiede tempo costante ammortizzato O(1) — calcolo dell'hash + ricerca lineare nella catena della casella, che in pratica è cortissima se il numero di caselle è ben dimensionato rispetto al numero di token distinti. Un'alternativa considerata era una struttura ordinata (es. albero AVL o array ordinato), che avrebbe avuto inserimenti in O(log N) e iterazione naturalmente ordinata; è stata scartata perché l'inserimento è l'operazione dominante (chiamata una volta per ogni coppia in arrivo, potenzialmente milioni) mentre l'ordinamento dei token è richiesto solo una volta a fine input. La tabella di hash + ordinamento finale O(N log N) ha quindi un costo totale equivalente nelle costanti più favorevoli del caso comune.
-Il modulo implementa due fasi distinte, con un passaggio esplicito di "chiusura" fra le due. Durante l'inserimento i valori associati a un token vengono accumulati in una lista concatenata, perché aggiungerne uno in coda costa O(1) e non richiede di pre-conoscere quanti valori arriveranno; al momento del finalize la lista viene "appiattita" in un array contiguo mr_value_t[] — esattamente la forma richiesta dalla firma di mr_reducer_t. Il finalize esegue inoltre un singolo qsort di tutti i puntatori alle entry, ordinandoli lessicograficamente per token: questa è la sorgente del determinismo dell'output, requisito esplicito della specifica §8.
-Il numero di caselle della tabella è fissato alla creazione (non c'è auto-resize). Per i carichi tipici del progetto questo è sufficiente; un'estensione futura potrebbe introdurre un raddoppio automatico quando il fattore di carico supera una soglia.
+Una scelta operativa critica, che presentiamo qui perché impatta
+l'architettura, è l'**ordine di creazione**: i tre processi nascono via
+`fork()` **prima** che vengano avviati i thread. Detto altrimenti, ogni
+processo è *single-threaded* nel momento in cui viene biforcato. Il motivo è
+che `fork()` clona soltanto il thread che lo chiama, mentre eventuali altri
+thread vengono persi nel figlio; mutex eventualmente posseduti da quei thread
+restano "occupati" nel figlio senza nessuno che possa liberarli. Forkare a
+single-thread elimina alla radice il rischio di stato residuo da liberare.
 
-###  Pipeline a fasi sequenziali nel reducer [Specifica §6.2]
-Il processo reducer adotta un'architettura a fasi sequenziali anziché un puro modello produttore-consumatore. La ragione è strutturale: per invocare la mr_reducer_t su un dato token, il framework deve avere raccolto tutti i valori associati a quel token, ma un valore può apparire in qualsiasi punto del flusso di coppie in arrivo dal mapper. Non è quindi possibile iniziare l'elaborazione di un token finché l'input non è interamente consumato. Il reducer implementa tre fasi non sovrapposte:
+# Interfaccia pubblica e contratti
 
-1. Fase di lettura: un singolo thread legge le coppie da stdin e le inserisce nella group_table. A EOF, esegue la finalize che appiattisce le liste di valori in array contigui e ordina le entry lessicograficamente per token.
-2. Fase di reducing parallelo: N thread worker prelevano entry dall'array sortato tramite un contatore atomico (work stealing) e invocano la callback utente, accumulando i risultati serializzati in buffer per-entry.
-3. Fase di flush: il main thread del processo scorre i buffer in ordine lessicografico e li scrive sulla pipe verso il processo principale.
+L'header `include/mr.h` espone esattamente quanto la specifica del progetto
+richiede (Appendice A): una *struct* `mr_attr_t` per la configurazione, un
+tipo opaco `mr_t` per la sessione, e quattro funzioni. La separazione fra i
+due tipi non è casuale.
 
-La sincronizzazione fra fasi è ottenuta semplicemente tramite thrd_join: prima di lanciare i worker, il main attende il termine del reader; prima di flushare, attende il termine di tutti i worker. Non servono né condition variable né flag espliciti — il join è già un punto di sincronizzazione "happens-before" della memoria.
+**`mr_attr_t` è esposta.** Contiene 12 campi pubblicamente accessibili: i
+numeri di thread, le dimensioni delle code, i percorsi di input e output, e
+così via. È esposta perché il chiamante deve poterla allocare nello stack,
+inizializzarla, modificarne i campi con i setter, e infine distruggerla.
+Esporre la struttura permette l'uso "C-idiomatico" di una configurazione
+fatta inizializzando la struct sullo stack.
 
-## 9. Formato del file di output 
-<!-- Record length-prefixed: token_len, token, result_len, result.
-     Ordinamento lessicografico per token = determinismo.
-     Programma ausiliario print_output per leggere il formato in chiaro. -->
-### Output deterministico con worker paralleli [Specifica §8]
-La specifica richiede che il file di output sia deterministico: a parità di input e configurazione, esecuzioni diverse devono produrre file identici. Tuttavia, i worker reducer lavorano in parallelo e terminano in ordine imprevedibile. Per riconciliare parallelismo e determinismo, il framework adotta uno schema a buffer per-entry più flush ordinato: ogni worker, anziché scrivere direttamente sulla pipe verso il processo principale, serializza i propri risultati (intestazione + token + result, formato length-prefixed identico a quello del file di output) in un buffer in memoria indicizzato dalla posizione dell'entry nell'array sortato. Quando tutti i worker hanno terminato, il main thread del processo reducer scorre i buffer in ordine di indice — cioè in ordine lessicografico per token — e li scrive sulla pipe in un colpo unico. L'ordine sulla pipe (e quindi nel file di output) è quindi fisso e indipendente dall'ordine di terminazione dei worker. Se il reducer utente emette più risultati per uno stesso token, l'ordine relativo fra essi è preservato perché il buffer è append-only: i risultati appaiono nel file nello stesso ordine in cui sono stati prodotti dalle chiamate a emit dentro la callback.
+**`mr_t` è opaca.** Il tipo è un *pointer alias* a una struttura definita
+solo in `mr.c`. Il chiamante non sa, e non deve sapere, cosa c'è dentro: i
+*pid* dei figli, i *file descriptor* delle pipe, i puntatori alle callback,
+sono dettagli implementativi della libreria. Esporre questi campi
+significherebbe vincolarci a non poterli mai più cambiare. Tenerli opachi
+permette di riorganizzarli in futuro senza rompere il chiamante.
 
-## 10. Formato del file di log
-<!-- Schema riga: [timestamp] [processo] [thread] [evento] messaggio.
-     Sincronizzazione interprocesso via semaforo POSIX named.
-     Lista degli eventi loggati (creazione pipe, fork, EOF, conteggi...). -->
-### Semaforo POSIX per il log [Specifica §11]
-Il file di log è scritto da tutti e tre i processi (principale, mapper, reducer), quindi richiede una primitiva di sincronizzazione inter-processo, e non solo inter-thread. La scelta adottata è un semaforo POSIX named, creato dal processo principale tramite sem_open() prima delle fork() e quindi ereditato dai processi figli. Ogni evento da loggare segue lo schema: sem_wait() per acquisire il lock, formattazione della riga in un buffer locale, writen() sul descrittore del file di log aperto con O_APPEND, sem_post() per rilasciare. La specifica al §11 indica esplicitamente i semafori POSIX come una soluzione ammissibile. Alternative considerate erano i lock su file (flock()/fcntl()) e un processo logger dedicato: la prima richiede attenzione alla semantica di O_APPEND sotto fork, la seconda introduce un quarto processo e un canale di comunicazione aggiuntivo, entrambe non giustificate per gli obiettivi del progetto.
+Le **callback** `mr_mapper_func_t` e `mr_reducer_func_t` ricevono dati e
+una funzione di *emissione* (`emit`) come parametro; non hanno accesso ai
+descrittori delle pipe, non vedono i thread su cui girano, non maneggiano
+sincronizzazioni. È un'astrazione di *funzione pura* (modulo gli effetti
+collaterali del log o di stato esterno scelto dall'utente attraverso il
+puntatore `user_arg`).
 
-### Sincronizzazione cross-process con semaforo POSIX [Specifica §11]
-Il file di log è scritto da tutti e tre i processi (principale, mapper, reducer) e dai loro thread. Il mtx_t C11 sarebbe insufficiente perché vive nello spazio di indirizzamento di un singolo processo: i figli non potrebbero coordinarsi col padre tramite un mutex C11 condiviso. La specifica nomina i semafori POSIX fra le primitive ammesse e li adotta come soluzione. Il framework crea un semaforo named (sem_open("/mr_log_<PID>", O_CREAT | O_EXCL, ...)) con valore iniziale 1, e i tre processi lo usano come mutex inter-processo: prima di scrivere sul file di log, ogni thread esegue sem_wait() (decrementa, eventualmente bloccando se a 0); subito dopo la write(), esegue sem_post() (incrementa, sbloccando un eventuale waiter). Il semaforo è creato dal processo principale prima delle fork(), ereditato automaticamente dai figli attraverso lo spazio di indirizzamento copy-on-write, e infine rimosso dal sistema con sem_unlink dal processo principale al termine dell'elaborazione.
+**Il contratto di `emit`** è la parte di interfaccia più sottile. La
+specifica (§A.1 di Appendice A) impone che `emit` **copi il contenuto del
+buffer ricevuto prima di restituire il controllo al chiamante**. Questo
+significa che il chiamante può tranquillamente passare un buffer allocato
+sullo stack, riusarlo per altre emissioni successive, o liberarlo subito
+dopo; la sua memoria non viene "tenuta in vita" attraverso il framework. Nel
+nostro caso questa copia è realizzata facendo sì che `emit` esegua una
+`write` *sincrona* sulla pipe: il kernel copia i byte nel buffer della pipe
+prima del ritorno, e questa è precisamente la "copia" richiesta dal
+contratto. Nessun buffering applicativo intermedio.
 
-### Stato globale e Thread Local Storage
-Il modulo di logging usa stato globale file-scope (g_log_fd, g_log_sem, g_proc_name) anziché passare un contesto a ogni chiamata. Questa scelta è motivata dalla pervasività del logging: praticamente ogni funzione del framework dovrebbe altrimenti accettare un argomento "log context" inutile per la logica vera. Il problema dello stato globale dopo fork() è risolto dalla semantica di fork stessa: ogni figlio riceve una copia indipendente delle variabili statiche, quindi la chiamata log_set_proc_name("mapper") nel figlio mapper modifica solo la sua copia di g_proc_name, non quella del padre. Per il nome del thread, che varia per ciascun thread all'interno di uno stesso processo, si usa una variabile dichiarata _Thread_local (TLS standard C11): il compilatore e la libreria garantiscono che ogni thread veda una sua istanza privata. Ogni thread la imposta una volta sola all'avvio (log_set_thread_name("worker-0")); da quel momento ogni log_event la legge automaticamente senza che il chiamante debba passarla.
+**`mr_start` è bloccante.** Non esiste una `mr_join`: `mr_start` ritorna solo
+quando i due processi figli sono stati raccolti via `waitpid` e il file di
+output è chiuso. Questo modello sincrono semplifica enormemente la vita
+dell'utente, che non deve preoccuparsi di stati intermedi.
 
-### Logging "best effort": fallimento silenzioso
-Le funzioni log_event e log_cleanup non propagano errori al chiamante: sono dichiarate void e in caso di fallimento (write fallita, semaforo non inizializzato, ecc.) ignorano silenziosamente. Questa è una scelta progettuale deliberata e segue un principio comune nelle librerie di logging: il logging è un servizio ausiliario che non deve influenzare il flusso dell'applicazione. Se in mezzo a una transazione critica fallisce la write del log file, è preferibile perdere un evento di log piuttosto che far fallire l'intera elaborazione MapReduce. La specifica al §11 richiede che gli errori del framework vengano registrati nel log, ma non specifica che gli errori del log stesso debbano interrompere l'esecuzione. Il principio si chiama fail-safe logging: il log degrada elegantemente sotto pressione.
+# Gestione dei processi: fork, pipe, dup2, waitpid
 
-## 11. Test realizzati
-<!-- Unit test: queue (push/pop/close), protocol (readn/writen).
-     End-to-end: wordcount su input noti.
-     Edge case: file vuoti, righe vuote, no \n finale, file con 1 riga. -->
+Il processo `main` crea le tre pipe con `pipe(2)`, poi esegue due `fork(2)`
+in successione. Per ciascun figlio, prima di restituire il controllo
+all'utente, si compie la seguente *disciplina dei descrittori*, che è
+**critica** e deve essere svolta meticolosamente.
 
-## 12. Conclusioni
-<!-- Cosa funziona. Limiti noti. Possibili estensioni (più mapper/reducer process). -->
+Il padre, dopo i due fork, **chiude i lati delle pipe che non userà**:
 
-## Scratchpad (rimuovere prima della consegna)
-<!-- da rimuovere -->
-### Scelte di design da tenere a mente per l'orale
-API stile iteratore (open / next / close) e non callback-based: il chiamante (mr.c) ha già il suo loop principale e vuole controllare lui quando chiedere la prossima riga, soprattutto perché tra una next e l'altra deve serializzare e scrivere sulla pipe (operazione bloccante).
-Puntatori "borrowed": file_input_next riempie un mr_file_line_t con puntatori validi solo fino alla chiamata successiva. Il chiamante li usa subito (li scrive sulla pipe) e li dimentica. Vantaggio: zero malloc/free per riga letta — il buffer interno viene riusato.
-getline() per la lettura: è POSIX 2008 (abbiamo già _POSIX_C_SOURCE=200809L), gestisce tutti i casi limite della specifica gratuitamente — ultima riga senza \\n, righe vuote, righe arbitrariamente lunghe (rialloca il buffer da sola). Strappiamo solo il \\n finale se presente, come richiesto dalla specifica ("Il carattere di fine riga non fa parte del contenuto logico della riga passato al mapper").
-scandir() con alphasort per le directory: combina enumerazione, filtro (saltiamo ., .. e non-file regolari) e ordinamento lessicografico in una sola chiamata. Determinismo garantito dalla libreria.
-Non è thread-safe: usa stato mutabile interno. Va benissimo perché ha un solo utilizzatore (il main thread del processo principale).
-### Per file_input
-Casi limite gestiti (da menzionare nella relazione)
-Direttamente coperti dalla specifica §4:
+```
+nel main (padre):
+    close(main_to_mapper[READ])      // legge solo il mapper
+    close(mapper_to_reducer[READ])   // legge solo il reducer
+    close(mapper_to_reducer[WRITE])  // scrive solo il mapper
+    close(reducer_to_main[WRITE])    // scrive solo il reducer
+```
 
-File vuoto: prima getline() ritorna -1 con feof, passiamo al file successivo. Se è l'unico file → file_input_next ritorna 0 senza mai produrre una riga.
-Riga vuota: getline() ritorna n = 1 (solo \\n), strip → line_len = 0. La specifica richiede che la riga vuota venga passata al mapper.
-File con una sola riga, senza \\n finale: getline() ritorna n = strlen(riga), nessuno strip, viene passata; chiamata successiva → EOF → file successivo o fine input.
-File con \\n finale: nessuna "riga fantasma" dopo il \\n perché getline() ritorna -1 alla chiamata successiva.
-Directory vuota o con soli non-file-regolari: paths_count resta 0, file_input_next ritorna 0 alla prima chiamata.
-### mr.c: prima passata
-Concettualmente la prima passata di mr.c risponde a tre domande operative:
+Ciascun figlio fa il simmetrico: chiude i lati che non userà e collega
+`stdin`/`stdout` ai lati che terrà, usando `dup2(2)`. Nel mapper, ad esempio:
 
-1 - Come si trasforma la struttura di processi prevista in chiamate di sistema concrete? → pipe() x 3, fork() x 2, dup2() per riconnettere stdin/stdout, close() chirurgica di tutto il resto.
-2 - Come si garantisce la propagazione corretta dell'EOF? → chiudendo aggressivamente ogni descrittore non usato in ogni processo. Lasciare aperto un solo lato di una pipe in un processo sbagliato vuol dire deadlock.
-3 - Come si raccoglie l'esito? → waitpid() esplicito sui due PID dei figli, controllo di WIFEXITED/WEXITSTATUS.
+```
+nel figlio mapper:
+    dup2(main_to_mapper[READ],     STDIN_FILENO)
+    dup2(mapper_to_reducer[WRITE], STDOUT_FILENO)
+    chiusura di tutti gli altri descrittori delle pipe
+```
+
+Questa disciplina è importante per tre motivi.
+
+Primo, **affinché EOF si propaghi correttamente**. Quando il padre chiude il
+lato di scrittura di `main_to_mapper`, il mapper riceve EOF *solo se* nessun
+altro processo nel sistema sta tenendo aperto quel lato. Se il padre avesse
+dimenticato di chiudere il suo riferimento al `READ` end, il mapper non lo
+saprebbe (sarebbe innocuo), ma se avesse dimenticato di chiudere il suo
+riferimento al `WRITE` end, il mapper *non vedrebbe mai EOF* e resterebbe in
+attesa indefinita. Questo è un classico errore difficile da diagnosticare.
+
+Secondo, **per liberare risorse**: i descrittori sono una risorsa di
+processo, lasciarli aperti senza necessità è uno spreco.
+
+Terzo, **per dare alle callback dell'utente un ambiente C-idiomatico**: il
+mapper legge dallo `stdin` e scrive sullo `stdout`. Anche se le callback non
+usano direttamente questi descrittori, il framework può scrivere il proprio
+codice come se fosse un filtro Unix.
+
+Al termine dell'esecuzione, `mr_start` chiama **`waitpid(2)` su entrambi i
+figli** per evitare processi *zombie* e per propagare lo stato di
+terminazione all'utente attraverso il log (sezione §9).
+
+# Thread C11: lifecycle e sincronizzazione
+
+Ognuno dei tre processi è single-threaded al momento del `fork`; i thread
+vengono creati subito dopo, dentro le funzioni di entry-point dei processi
+figli (`mapper_process_main`, `reducer_process_main`), usando le primitive
+del C11 dichiarate in `<threads.h>`: `thrd_create`, `thrd_join`, `mtx_t`,
+`cnd_t`, `_Thread_local`.
+
+Il **processo mapper** crea due *gruppi* di thread:
+
+- **un singolo *reader thread*** che legge dalla pipe verso il main,
+  deserializza i messaggi nel protocollo descritto al §7, e accoda gli
+  oggetti su una coda interna;
+- **N *worker thread*** (default 4, configurabile via `mr_attr_t`) che
+  estraggono righe dalla coda e invocano la *map function* dell'utente, che
+  a sua volta chiama `emit` per ogni coppia chiave–valore prodotta.
+
+Questa scelta — un *reader* unico e più worker — separa la responsabilità
+di parsing del protocollo dalla responsabilità di calcolo. Avere più reader
+sulla stessa pipe sarebbe possibile ma non utile: la `read(2)` è
+sincronizzata dal kernel, e parallelizzare la deserializzazione di un flusso
+sequenziale non porta velocità apprezzabile.
+
+Il **processo reducer** adotta uno schema diverso: una **pipeline a tre fasi
+sequenziali**, non un modello producer–consumer.
+
+- **Fase 1**: un reader thread legge *tutte* le coppie dalla pipe verso il
+  mapper, le inserisce in una *hash table* che raggruppa i valori per
+  *token* (sezione §7), e termina al ricevere EOF.
+- **Fase 2**: la hash table viene *finalizzata*: ogni *bucket* viene
+  trasformato in un array, l'insieme dei token viene ordinato
+  lessicograficamente. A questo punto vengono creati N *worker thread* che
+  invocano la *reduce function* sui gruppi assegnatigli, usando un
+  *contatore atomico* condiviso per il *work stealing* (ogni worker fa
+  `atomic_fetch_add(&next, 1)` per ricevere un nuovo indice).
+- **Fase 3**: dopo che tutti i worker hanno terminato, il main thread del
+  reducer percorre l'array dei token in ordine lessicografico e scrive sulla
+  pipe verso il main i risultati prodotti dai worker, già pre-serializzati
+  in buffer per-entry.
+
+La scelta di **tre fasi sequenziali** invece di una pipeline streaming è una
+decisione di progetto motivata dalle richieste di determinismo (§8): se
+volessimo iniziare a *ridurre* mentre il *grouping* è ancora in corso,
+dovremmo affrontare la complicazione di decidere "questo gruppo è completo
+oppure arriveranno ancora valori?". Tre fasi sequenziali rendono il problema
+banale: la fase di reduce inizia solo quando la fase di grouping è
+completamente terminata.
+
+Tutte le primitive di sincronizzazione tra thread (mutex, variabili di
+condizione, code) sono **per-processo**: vivono nello stesso spazio di
+indirizzamento e non attraversano i confini di processo. Quando serve
+serializzazione cross-process (per il log) si usa un semaforo POSIX named
+(§9).
+
+# Coda thread-safe e protocollo IPC
+
+La struttura `mr_queue_t` (in `src/queue.c`) è una coda *bounded* di puntatori
+opachi, thread-safe, con semantica di chiusura:
+
+- un *producer* esegue `queue_push(q, item)`; se la coda è piena, attende su
+  una variabile di condizione;
+- un *consumer* esegue `queue_pop(q, &item)`; se la coda è vuota e non
+  chiusa, attende; se vuota e chiusa, riceve un codice di terminazione;
+- `queue_close(q)` segnala "non arriveranno più elementi", e fa
+  `cnd_broadcast` per svegliare *tutti* i consumer in attesa, che vedranno
+  la coda vuota+chiusa e termineranno.
+
+Tutto è protetto da un singolo `mtx_t` + due `cnd_t` (uno per "non più
+piena", uno per "non più vuota").
+
+Il *protocollo* di scambio fra i processi (file `src/protocol.c`) è
+**length-prefixed**: ogni messaggio è preceduto da un *header* a intero che
+indica la lunghezza dei dati che seguono. Esistono tre tipi di messaggio:
+
+1. una **riga** spedita dal main al mapper: `[int len][bytes len]`;
+2. una **coppia chiave–valore** spedita dal mapper al reducer: `[int klen][bytes klen][int vlen][bytes vlen]`;
+3. un **risultato** spedito dal reducer al main, stesso formato di una
+   coppia.
+
+La scelta del length-prefix risolve il problema fondamentale della
+*framing*: come distinguere dove finisce un messaggio e dove ne inizia un
+altro su un flusso di byte. Alternative come delimitatori di fine
+(`\0`, `\n`, `\r\n`) hanno il difetto che il delimitatore può apparire
+all'interno dei dati binari (un valore arbitrario può contenere uno zero).
+Il length-prefix è binario, sicuro per ogni payload, autodescrittivo.
+
+Tutte le `read` e le `write` sulle pipe sono incapsulate in due funzioni
+`readn` e `writen` che gestiscono le **letture e scritture parziali**: il
+kernel non garantisce di soddisfare in una singola syscall la richiesta di
+trasferire N byte; può ritornare un numero inferiore. Le funzioni iterano
+finché non hanno trasferito tutto, oppure ritornano errore. Validano inoltre
+le lunghezze ricevute (non negative, sotto un tetto di 16 MB) per rifiutare
+messaggi corrotti.
+
+# Raggruppamento per token
+
+Il raggruppamento dei valori per chiave nel reducer è realizzato in
+`src/group_table.c` con una **hash table a *bucket***: 1024 *bucket*
+implementati come liste linkate, indirizzati da una funzione hash FNV-1a sul
+token. La struttura ha due fasi di vita:
+
+- **fase di inserimento** (durante la lettura dalla pipe): ogni coppia
+  `(token, valore)` viene cercata nei bucket; se il token è nuovo, viene
+  creata una nuova entry; se esiste, il valore viene appeso a una lista
+  linkata interna alla entry. Il framework copia sia il token che il valore
+  in memoria propria (la callback `emit` aveva già copiato i byte nel buffer
+  della pipe; qui copiamo nuovamente nella tabella).
+- **fase di finalizzazione**: a EOF, la tabella viene "consolidata" — per
+  ogni entry, la lista linkata di valori viene riversata in un array
+  contiguo; l'insieme di tutti i token viene poi raccolto in un secondo
+  array, ordinato lessicograficamente con `qsort`. È questo array ordinato
+  che la *reduce phase* attraversa.
+
+La scelta della *hash table* con 1024 bucket e *chaining* è un compromesso
+ragionevole fra semplicità di implementazione e prestazioni nel caso medio.
+Per un numero di token estremamente grande il fattore di carico crescerebbe
+e le liste si allungherebbero, ma il dimensionamento è coerente con
+l'ipotesi di lavoro su file di testo di taglia tipica del progetto. Il
+**modello di proprietà** della memoria è chiaro: la tabella possiede tutte
+le proprie chiavi e valori, e li libera nella sua funzione di distruzione.
+
+# Formato di output e determinismo
+
+Il file di output ha lo **stesso formato length-prefixed** dei messaggi sulla
+pipe `reducer_to_main`. Il main, dopo l'avvio dei figli, esegue un *pass-through*
+byte-per-byte dalla pipe del reducer al file di output: legge un *header* di
+lunghezza, scrive l'header e il payload sul file, ripete fino a EOF. Il main
+non interpreta nulla; trasporta soltanto.
+
+Il **determinismo** del file di output è una proprietà obbligatoria
+(specifica §8) e non automatica: il framework esegue calcoli su più thread,
+e l'ordine di esecuzione dei worker è non deterministico. Tre meccanismi
+combinati garantiscono comunque l'identità byte-per-byte fra esecuzioni
+ripetute:
+
+- **i token sono ordinati lessicograficamente** alla fine della fase di
+  *grouping* (sezione §7);
+- **i worker del reducer accumulano i propri risultati in *buffer per
+  entry*** invece di scriverli direttamente sulla pipe; nessun worker
+  esegue scritture sulla pipe;
+- **il main thread del reducer scorre l'array ordinato dei token**, prende
+  il buffer pre-serializzato di ciascuna entry e lo scrive sulla pipe in
+  *ordine lessicografico stretto*. Anche se i worker hanno terminato in un
+  ordine arbitrario, il flush finale è sequenziale e deterministico.
+
+Una conseguenza piacevole è che il file di output è anche *testualmente*
+diff-abile fra esecuzioni con un semplice `cmp` o `diff` — proprietà che il
+test end-to-end sfrutta direttamente.
+
+# Sistema di logging
+
+A ogni esecuzione il framework produce un file `mr.log` nella directory di
+lavoro, scritto da **tutti e tre i processi** e da **tutti i thread di
+ciascun processo**. Per garantire che le righe non si intreccino fra di loro
+mentre vengono scritte, l'accesso al file è protetto da un **semaforo POSIX
+*named*** (`/mr_log_<pid_del_padre>`, dove `<pid_del_padre>` è il pid del
+processo main al momento di `mr_start`).
+
+La scelta del semaforo POSIX named è dettata dalla necessità di
+sincronizzazione *cross-process*: i mutex C11 vivono nello spazio di
+indirizzamento di un singolo processo e non sono utilizzabili attraverso una
+`fork`. I semafori POSIX named, al contrario, sono identificati da un nome
+nel filesystem (`/dev/shm` su Linux) e sono accessibili da qualsiasi processo
+che conosca il nome. Il padre li crea con `sem_open(O_CREAT | O_EXCL)` e li
+distrugge con `sem_unlink` al termine; i figli li ereditano via `fork` (il
+nome è disponibile attraverso lo stato del padre clonato).
+
+All'interno di ciascun processo, una variabile a livello di file (`log_st`)
+mantiene lo stato del logging (descrittore aperto, semaforo, identificativo
+del processo); una variabile `_Thread_local` mantiene il nome del thread
+corrente, in modo che ogni thread possa loggare con la propria identità
+senza dover passare il proprio nome ad ogni chiamata.
+
+Il **formato del log** è ASCII a colonne fisse:
+
+```
+[YYYY-MM-DD HH:MM:SS.mmm] [proc   ] [thread    ] [EVENT             ] msg
+```
+
+con `proc` di 7 caratteri (per accomodare "reducer"), `thread` di 10
+caratteri (per accomodare "worker-NN"), e `EVENT` di 18 caratteri. Questa
+scelta rende il file facilmente *parseabile* con strumenti testuali standard
+(`grep`, `awk`, `cut`), e il formato del timestamp ISO-8601 con zero-padding
+ha la proprietà di essere lessicograficamente ordinabile: un semplice `sort
+mr.log` produce le righe in ordine cronologico anche quando il `sem_wait` ha
+riordinato l'arrivo sul file.
+
+Il logging è *best-effort*: le funzioni di log non propagano mai un errore
+al chiamante. Se il file non si apre o il semaforo non si crea, il log
+viene disabilitato silenziosamente e il programma continua. Un fallimento
+del log non è mai un buon motivo per fallire un MapReduce.
+
+# Compilazione, uso, test
+
+## Compilazione
+
+Il `Makefile` di livello superiore è organizzato in modo *ricorsivo*: ha le
+proprie regole per compilare i sorgenti della libreria in `src/` e produrre
+`lib/libmr.a`, e poi delega ai *sub-Makefile* di `examples/` e `tests/`. I
+target principali sono:
+
+- `make` o `make all` — compila tutto;
+- `make test` — esegue i test unitari e quelli end-to-end;
+- `make clean` — rimuove tutti gli artefatti di build (`.o`, `.a`,
+  eseguibili, file `mr.log`, PDF della relazione).
+
+I flag di compilazione sono `-std=c11 -Wall -Wextra -Wpedantic -O2
+-D_POSIX_C_SOURCE=200809L`. Il warning level rigoroso è una scelta di
+qualità: il codice compila senza warning con queste opzioni.
+
+## Test unitari
+
+I test unitari (`tests/test_*.c`) sono programmi `main()` autonomi che
+chiamano le API interne dei moduli e usano `assert` per le verifiche.
+Coprono:
+
+- **`test_queue`** — push/pop con producer e consumer concorrenti, chiusura
+  con drain corretto, comportamento con coda piena;
+- **`test_protocol`** — round-trip di serializzazione/deserializzazione dei
+  tre tipi di messaggio, rifiuto di lunghezze invalide;
+- **`test_attr`** — initialize/destroy ripetuti, setter di tutti i campi,
+  comportamento con puntatori `NULL`;
+- **`test_group_table`** — inserimento, lookup, finalizzazione, ordinamento,
+  pulizia.
+
+## Test end-to-end
+
+Il test end-to-end (`tests/test_e2e.sh`) esegue il binario `wordcount`
+linkato contro `libmr.a` su sei casi di input distinti (caso base, file
+vuoto, riga finale senza newline, punteggiatura come separatore, directory
+con più file, esecuzione ripetuta per il determinismo), decodifica il file
+binario di output con `print_output`, e confronta byte a byte con un output
+atteso scritto a mano. Ognuno dei sei casi è motivato da un requisito
+puntualmente nominato dalla specifica (§4 per i casi limite di input, §8 per
+il determinismo).
+
+# Conclusioni
+
+Il progetto realizza interamente le funzionalità richieste dalla specifica:
+l'interfaccia pubblica corrisponde all'Appendice A, l'architettura a tre
+processi è quella prescritta al §5, il sistema di logging usa il semaforo
+POSIX named come richiesto al §11, l'output è deterministico come richiesto
+al §8, e i test (unitari e end-to-end) coprono i casi limite enumerati nella
+specifica.
+
+I due aspetti progettuali più sottili — e quelli su cui si è dovuta
+investire più attenzione — sono stati la **disciplina dei descrittori dopo
+`fork`** (la propagazione corretta dell'EOF lungo la cascata di pipe
+dipende dalla chiusura *meticolosa* dei lati non utilizzati) e la
+**garanzia di output deterministico in presenza di thread paralleli nel
+reducer** (risolta con il pattern *per-entry buffering + flush ordinato
+single-threaded*). Sono questi i due punti che caratterizzano il progetto
+come *concorrente reale*, e che si è scelto di descrivere in dettaglio
+nelle sezioni §4 e §8.
+
+Il framework, nella sua forma attuale, è completo e funzionante per il caso
+d'uso canonico del `wordcount`. Le naturali estensioni — gestione di
+*file di input molto grandi* (oggi tutto il *grouping* tiene memoria nella
+hash table del reducer), un *combiner* opzionale eseguito dal mapper per
+ridurre il traffico sulla pipe `mapper_to_reducer`, *shuffling* fra più
+reducer — sono fuori dallo scopo del progetto del corso e non sono state
+implementate.
