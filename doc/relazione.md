@@ -58,6 +58,9 @@ Un vincolo critico della specifica è che fork() non deve mai essere chiamato da
 ### La funzione emit e il suo emit_arg "magico" [Specifica §A]
 La firma di mr_mapper_t definita dalla specifica include un parametro void *emit_arg che il framework passa alla callback utente insieme al puntatore alla funzione emit. Il parametro è opaco per l'utente: non deve interpretarlo né modificarlo, lo passa pari pari quando richiama emit. È invece il framework che, dentro l'implementazione di emit, sa che emit_arg è un puntatore alla propria struct mapper_state, e lo cast'a per accedere al contesto di esecuzione (file descriptor della pipe verso il reducer, mutex di scrittura, eventuale stato per il logging). Il pattern è una forma classica di iniezione di contesto in una callback in C, equivalente concettualmente alla this-pointer dei linguaggi orientati agli oggetti: la callback non sa nulla del framework, ma porta con sé un riferimento opaco al proprio "ambiente" che, ritornato indietro al framework, gli permette di riprendere il controllo coerente del proprio stato.
 
+### Work stealing dinamico con contatore atomico
+La distribuzione del lavoro fra i worker non è statica (es. blocchi contigui di entry per worker) ma dinamica: tutte le entry sono in un unico array condiviso, e ciascun worker, quando è libero, esegue atomic_fetch_add(&next_idx, 1) per prenotare la prossima entry disponibile. Questo schema, noto come work stealing dinamico, garantisce un bilanciamento del carico anche quando il costo di elaborazione delle entry è fortemente eterogeneo: se un'entry richiede molto più lavoro di un'altra (es. valori per quel token particolarmente numerosi), i worker liberi continuano a prelevare entry rapide senza attendere il worker "lento". Il costo è una singola operazione atomica per prelievo — molto inferiore a quello di un mutex — e nessuna logica di partizionamento a priori.
+
 ## 6. Code interne e sincronizzazione
 <!-- Pattern producer-consumer con mtx + cnd.
      is_closed + cnd_broadcast: come si sveglia tutti i worker dormienti.
@@ -92,10 +95,21 @@ La struttura dati che raggruppa i valori per token nel processo reducer è una t
 Il modulo implementa due fasi distinte, con un passaggio esplicito di "chiusura" fra le due. Durante l'inserimento i valori associati a un token vengono accumulati in una lista concatenata, perché aggiungerne uno in coda costa O(1) e non richiede di pre-conoscere quanti valori arriveranno; al momento del finalize la lista viene "appiattita" in un array contiguo mr_value_t[] — esattamente la forma richiesta dalla firma di mr_reducer_t. Il finalize esegue inoltre un singolo qsort di tutti i puntatori alle entry, ordinandoli lessicograficamente per token: questa è la sorgente del determinismo dell'output, requisito esplicito della specifica §8.
 Il numero di caselle della tabella è fissato alla creazione (non c'è auto-resize). Per i carichi tipici del progetto questo è sufficiente; un'estensione futura potrebbe introdurre un raddoppio automatico quando il fattore di carico supera una soglia.
 
+###  Pipeline a fasi sequenziali nel reducer [Specifica §6.2]
+Il processo reducer adotta un'architettura a fasi sequenziali anziché un puro modello produttore-consumatore. La ragione è strutturale: per invocare la mr_reducer_t su un dato token, il framework deve avere raccolto tutti i valori associati a quel token, ma un valore può apparire in qualsiasi punto del flusso di coppie in arrivo dal mapper. Non è quindi possibile iniziare l'elaborazione di un token finché l'input non è interamente consumato. Il reducer implementa tre fasi non sovrapposte:
+
+1. Fase di lettura: un singolo thread legge le coppie da stdin e le inserisce nella group_table. A EOF, esegue la finalize che appiattisce le liste di valori in array contigui e ordina le entry lessicograficamente per token.
+2. Fase di reducing parallelo: N thread worker prelevano entry dall'array sortato tramite un contatore atomico (work stealing) e invocano la callback utente, accumulando i risultati serializzati in buffer per-entry.
+3. Fase di flush: il main thread del processo scorre i buffer in ordine lessicografico e li scrive sulla pipe verso il processo principale.
+
+La sincronizzazione fra fasi è ottenuta semplicemente tramite thrd_join: prima di lanciare i worker, il main attende il termine del reader; prima di flushare, attende il termine di tutti i worker. Non servono né condition variable né flag espliciti — il join è già un punto di sincronizzazione "happens-before" della memoria.
+
 ## 9. Formato del file di output 
 <!-- Record length-prefixed: token_len, token, result_len, result.
      Ordinamento lessicografico per token = determinismo.
      Programma ausiliario print_output per leggere il formato in chiaro. -->
+### Output deterministico con worker paralleli [Specifica §8]
+La specifica richiede che il file di output sia deterministico: a parità di input e configurazione, esecuzioni diverse devono produrre file identici. Tuttavia, i worker reducer lavorano in parallelo e terminano in ordine imprevedibile. Per riconciliare parallelismo e determinismo, il framework adotta uno schema a buffer per-entry più flush ordinato: ogni worker, anziché scrivere direttamente sulla pipe verso il processo principale, serializza i propri risultati (intestazione + token + result, formato length-prefixed identico a quello del file di output) in un buffer in memoria indicizzato dalla posizione dell'entry nell'array sortato. Quando tutti i worker hanno terminato, il main thread del processo reducer scorre i buffer in ordine di indice — cioè in ordine lessicografico per token — e li scrive sulla pipe in un colpo unico. L'ordine sulla pipe (e quindi nel file di output) è quindi fisso e indipendente dall'ordine di terminazione dei worker. Se il reducer utente emette più risultati per uno stesso token, l'ordine relativo fra essi è preservato perché il buffer è append-only: i risultati appaiono nel file nello stesso ordine in cui sono stati prodotti dalle chiamate a emit dentro la callback.
 
 ## 10. Formato del file di log
 <!-- Schema riga: [timestamp] [processo] [thread] [evento] messaggio.

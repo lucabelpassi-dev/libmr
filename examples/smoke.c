@@ -16,13 +16,13 @@ static int demo_mapper(const mr_file_line_t *line,
     return emit(token, line->line, line->line_len, emit_arg);
 }
 
-/* Reducer dummy: per ora il processo reducer e' ancora uno stub che
- * drena byte grezzi, quindi questa funzione non verra' mai invocata. */
-static int dummy_reducer(const char *token, const mr_value_t *values,
-                         size_t values_count, mr_emit_result_t emit,
-                         void *emit_arg, void *user_arg) {
-    (void)token; (void)values; (void)values_count;
-    (void)emit;  (void)emit_arg; (void)user_arg;
+static int passthrough_reducer(const char *token, const mr_value_t *values,
+                               size_t values_count, mr_emit_result_t emit,
+                               void *emit_arg, void *user_arg) {
+    (void)user_arg;
+    if (values_count > 0) {
+        return emit(token, values[0].data, values[0].size, emit_arg);
+    }
     return 0;
 }
 
@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
     mr_attr_t attr;
     mr_attr_init(&attr);
     mr_t mr;
-    if (mr_create(&mr, &attr, demo_mapper, dummy_reducer, NULL) == -1) {
+    if (mr_create(&mr, &attr, demo_mapper, passthrough_reducer, NULL) == -1) {
         perror("mr_create"); return 1;
     }
     if (mr_start(mr, argv[1], argv[2]) == -1) {

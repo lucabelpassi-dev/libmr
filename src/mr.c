@@ -254,15 +254,15 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
      * piu' righe. */
     close(main_to_mapper[1]); main_to_mapper[1] = -1;
 
-    /* ----- 9. Loop: leggi risultati dal reducer e scrivili in output -----
-     * Per la passata 1, drenamo soltanto: nella passata 2 qui andra'
-     * il parsing + writen su out_fd nel formato length-prefixed di
-     * §8 della specifica. */
+   /* ----- 9. Loop: leggi risultati dal reducer e scrivili in output -----
+     * Il formato sulla pipe e' identico a quello richiesto sul file
+     * (length-prefixed): non serve deserializzare e riserializzare,
+     * basta un pass-through byte per byte. */
     {
         char buf[4096];
         ssize_t n;
         while ((n = read(reducer_to_main[0], buf, sizeof buf)) > 0) {
-            /* TODO passata 2: parse header risultato, scrivi su out_fd */
+            if (writen(out_fd, buf, (size_t)n) == -1) goto cleanup;
         }
         if (n == -1) goto cleanup;
     }
