@@ -1,32 +1,46 @@
 #include "mr.h"
 #include <stdio.h>
+#include <string.h>
 
-/* Callback dummy: non verranno invocate dagli stub, ma servono per
- * soddisfare l'API di mr_create. */
-static int dummy_mapper(const mr_file_line_t *l, mr_emit_pair_t e,
-                        void *ea, void *ua) {
-    (void)l; (void)e; (void)ea; (void)ua;
-    return 0;
+/* Mapper demo per testare la pipeline: per ogni riga emette UNA coppia
+ * <"lineN", contenuto_della_riga> dove N e' il numero di riga.
+ *
+ * NB: il token "lineN" e' alfanumerico ASCII, come richiesto dal
+ * contratto (§3 della specifica). Il valore e' la riga grezza,
+ * cioe' byte arbitrari di lunghezza nota — opaco per il framework. */
+static int demo_mapper(const mr_file_line_t *line,
+                       mr_emit_pair_t emit, void *emit_arg, void *user_arg) {
+    (void)user_arg;
+    char token[64];
+    snprintf(token, sizeof(token), "line%lu", line->line_number);
+    return emit(token, line->line, line->line_len, emit_arg);
 }
-static int dummy_reducer(const char *t, const mr_value_t *v, size_t n,
-                         mr_emit_result_t e, void *ea, void *ua) {
-    (void)t; (void)v; (void)n; (void)e; (void)ea; (void)ua;
+
+/* Reducer dummy: per ora il processo reducer e' ancora uno stub che
+ * drena byte grezzi, quindi questa funzione non verra' mai invocata. */
+static int dummy_reducer(const char *token, const mr_value_t *values,
+                         size_t values_count, mr_emit_result_t emit,
+                         void *emit_arg, void *user_arg) {
+    (void)token; (void)values; (void)values_count;
+    (void)emit;  (void)emit_arg; (void)user_arg;
     return 0;
 }
 
 int main(int argc, char **argv) {
     if (argc != 3) {
-        fprintf(stderr, "usage: %s <input_path> <output_path>\n", argv[0]);
+        fprintf(stderr, "usage: %s <input> <output>\n", argv[0]);
         return 1;
     }
     mr_attr_t attr;
     mr_attr_init(&attr);
     mr_t mr;
-    if (mr_create(&mr, &attr, dummy_mapper, dummy_reducer, NULL) == -1) {
+    if (mr_create(&mr, &attr, demo_mapper, dummy_reducer, NULL) == -1) {
         perror("mr_create"); return 1;
     }
     if (mr_start(mr, argv[1], argv[2]) == -1) {
-        perror("mr_start"); mr_destroy(mr); mr_attr_destroy(&attr); return 1;
+        perror("mr_start");
+        mr_destroy(mr); mr_attr_destroy(&attr);
+        return 1;
     }
     mr_destroy(mr);
     mr_attr_destroy(&attr);
