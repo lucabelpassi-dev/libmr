@@ -1,0 +1,38 @@
+[2026-05-13 15:11:22.449] [main   ] [-         ] [MR_START          ] input=/tmp/mr_test/input.txt output=/tmp/mr_test/output.bin mapper_threads=4 reducer_threads=4 queue_size=64
+[2026-05-13 15:11:22.449] [main   ] [-         ] [OUTPUT_OPEN       ] path=/tmp/mr_test/output.bin fd=4
+[2026-05-13 15:11:22.451] [main   ] [-         ] [PIPE_CREATED      ] main_to_mapper read=5 write=6
+[2026-05-13 15:11:22.452] [main   ] [-         ] [PIPE_CREATED      ] mapper_to_reducer read=7 write=8
+[2026-05-13 15:11:22.453] [main   ] [-         ] [PIPE_CREATED      ] reducer_to_main read=9 write=10
+[2026-05-13 15:11:22.453] [main   ] [-         ] [FORK_MAPPER       ] pid=96658
+[2026-05-13 15:11:22.455] [main   ] [-         ] [FORK_REDUCER      ] pid=96659
+[2026-05-13 15:11:22.453] [mapper ] [-         ] [PROC_START        ] 
+[2026-05-13 15:11:22.457] [mapper ] [worker-0  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.456] [main   ] [-         ] [INPUT_OPEN        ] path=/tmp/mr_test/input.txt
+[2026-05-13 15:11:22.457] [mapper ] [worker-1  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.457] [mapper ] [worker-2  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.455] [reducer] [-         ] [PROC_START        ] 
+[2026-05-13 15:11:22.457] [mapper ] [reader    ] [THREAD_START      ] 
+[2026-05-13 15:11:22.457] [mapper ] [worker-3  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.460] [main   ] [-         ] [INPUT_LINES       ] count=5
+[2026-05-13 15:11:22.460] [reducer] [reader    ] [THREAD_START      ] 
+[2026-05-13 15:11:22.461] [mapper ] [worker-1  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.461] [mapper ] [worker-3  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.461] [mapper ] [worker-2  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.461] [mapper ] [reader    ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.461] [mapper ] [worker-0  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.463] [mapper ] [-         ] [PAIRS_EMITTED     ] count=5
+[2026-05-13 15:11:22.463] [mapper ] [-         ] [PROC_END          ] rc=0
+[2026-05-13 15:11:22.464] [reducer] [reader    ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.464] [reducer] [-         ] [TOKENS_GROUPED    ] count=5
+[2026-05-13 15:11:22.465] [reducer] [worker-0  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.465] [reducer] [worker-0  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.465] [reducer] [worker-1  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.466] [reducer] [worker-1  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.466] [reducer] [worker-3  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.467] [reducer] [worker-3  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.466] [reducer] [worker-2  ] [THREAD_START      ] 
+[2026-05-13 15:11:22.468] [reducer] [worker-2  ] [THREAD_END        ] rc=0
+[2026-05-13 15:11:22.468] [reducer] [-         ] [RESULTS_EMITTED   ] count=5
+[2026-05-13 15:11:22.468] [reducer] [-         ] [PROC_END          ] rc=0
+[2026-05-13 15:11:22.469] [main   ] [-         ] [WAITPID           ] mapper_status=0 reducer_status=0
+[2026-05-13 15:11:22.469] [main   ] [-         ] [MR_END            ] ret=0

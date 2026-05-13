@@ -14,6 +14,7 @@
 #include "reducer_proc.h"
 #include "file_input.h"
 #include "protocol.h"
+#include "log.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -33,17 +34,13 @@ struct mr {
     void        *user_arg;
 };
 
-/* ===== Helper interno =====
- * Copia profonda di mr_attr_t: i campi scalari sono copiati per valore,
- * log_file e' duplicato con strdup() in modo che la mr_t sia
- * indipendente dall'attr passato dall'utente. */
 static int copy_attrs(mr_attr_t *dst, const mr_attr_t *src) {
     dst->mapper_threads  = src->mapper_threads;
     dst->reducer_threads = src->reducer_threads;
     dst->queue_size      = src->queue_size;
     if (src->log_file != NULL) {
         char *copy = strdup(src->log_file);
-        if (copy == NULL) return -1;  /* errno = ENOMEM da strdup */
+        if (copy == NULL) return -1;
         dst->log_file = copy;
     } else {
         dst->log_file = NULL;
@@ -51,213 +48,174 @@ static int copy_attrs(mr_attr_t *dst, const mr_attr_t *src) {
     return 0;
 }
 
-/* ===== mr_create ===== */
-int mr_create(mr_t *mr,
-              const mr_attr_t *attr,
-              mr_mapper_t mapper,
-              mr_reducer_t reducer,
-              void *user_arg) {
-    /* Validazione dei parametri obbligatori. user_arg puo' essere NULL. */
+int mr_create(mr_t *mr, const mr_attr_t *attr,
+              mr_mapper_t mapper, mr_reducer_t reducer, void *user_arg) {
     if (mr == NULL || attr == NULL || mapper == NULL || reducer == NULL) {
-        errno = EINVAL;
-        return -1;
+        errno = EINVAL; return -1;
     }
-    /* Difesa in profondita': anche se mr_attr_set_* avrebbe gia' rifiutato
-     * questi valori, l'utente potrebbe avere bypassato i setter scrivendo
-     * direttamente nei campi della struct. Ricontrolliamo qui. */
-    if (attr->mapper_threads == 0 ||
-        attr->reducer_threads == 0 ||
+    if (attr->mapper_threads == 0 || attr->reducer_threads == 0 ||
         attr->queue_size == 0) {
-        errno = EINVAL;
-        return -1;
+        errno = EINVAL; return -1;
     }
 
     struct mr *m = calloc(1, sizeof(*m));
     if (m == NULL) return -1;
-
-    if (copy_attrs(&m->attrs, attr) == -1) {
-        free(m);
-        return -1;
-    }
+    if (copy_attrs(&m->attrs, attr) == -1) { free(m); return -1; }
 
     m->mapper   = mapper;
     m->reducer  = reducer;
     m->user_arg = user_arg;
-
     *mr = m;
     return 0;
 }
 
-/* ===== mr_destroy ===== */
 int mr_destroy(mr_t mr) {
-    if (mr == NULL) {
-        errno = EINVAL;
-        return -1;
-    }
+    if (mr == NULL) { errno = EINVAL; return -1; }
     free((void *)mr->attrs.log_file);
     free(mr);
     return 0;
 }
 
-/* ===== mr_start =====
- *
- * Sequenza:
- *   1. apre file di output
- *   2. crea le 3 pipe
- *   3. fork() del processo mapper
- *   4. fork() del processo reducer
- *   5. chiusura dei descrittori NON usati nel padre
- *   6. apre la sorgente di input (file_input)
- *   7. loop: legge riga -> serializza -> writen() verso mapper [TODO p.2]
- *   8. chiude la pipe verso il mapper (segnala EOF)
- *   9. loop: legge risultati dal reducer -> scrive su output [TODO p.2]
- *  10. chiude la pipe dal reducer
- *  11. waitpid() su entrambi i figli
- *  12. cleanup
- */
 int mr_start(mr_t mr, const char *input_path, const char *output_path) {
     if (mr == NULL || input_path == NULL || output_path == NULL) {
-        errno = EINVAL;
-        return -1;
+        errno = EINVAL; return -1;
     }
 
-    /* Tutte le risorse partono "non aperte" per permettere cleanup
-     * idempotente al label `cleanup`. */
-    int ret = -1;
-    int out_fd = -1;
-    int main_to_mapper[2]    = { -1, -1 };
-    int mapper_to_reducer[2] = { -1, -1 };
-    int reducer_to_main[2]   = { -1, -1 };
-    pid_t mapper_pid  = -1;
-    pid_t reducer_pid = -1;
-    file_input_t *fi = NULL;
+    /* === FIX BUG 1: TUTTE le variabili dichiarate qui, PRIMA di
+     * qualsiasi cosa che possa fare goto cleanup. Cosi' anche se
+     * log_init() fallisce subito, il cleanup vede valori validi. === */
+    int   ret                  = -1;
+    int   out_fd               = -1;
+    int   main_to_mapper[2]    = { -1, -1 };
+    int   mapper_to_reducer[2] = { -1, -1 };
+    int   reducer_to_main[2]   = { -1, -1 };
+    pid_t mapper_pid           = -1;
+    pid_t reducer_pid          = -1;
+    file_input_t *fi           = NULL;
+    char  sem_name[64];
 
-    /* ----- 1. Apri il file di output ----- */
+    /* === Setup logging === */
+    snprintf(sem_name, sizeof sem_name, "/mr_log_%d", (int)getpid());
+    if (log_init(mr->attrs.log_file, sem_name, "main") == -1) goto cleanup;
+
+    log_event("MR_START",
+              "input=%s output=%s mapper_threads=%zu reducer_threads=%zu queue_size=%zu",
+              input_path, output_path,
+              mr->attrs.mapper_threads, mr->attrs.reducer_threads,
+              mr->attrs.queue_size);
+
+    /* === 1. Apri il file di output === */
     out_fd = open(output_path,
                   O_WRONLY | O_CREAT | O_TRUNC,
-                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);  /* 0644 */
+                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (out_fd == -1) goto cleanup;
+    log_event("OUTPUT_OPEN", "path=%s fd=%d", output_path, out_fd);
 
-    /* ----- 2. Crea le tre pipe ----- */
-    if (pipe(main_to_mapper)    == -1) goto cleanup;
+    /* === 2. Crea le tre pipe (FIX BUG 2: log distinti per ciascuna) === */
+    if (pipe(main_to_mapper) == -1) goto cleanup;
+    log_event("PIPE_CREATED", "main_to_mapper read=%d write=%d",
+              main_to_mapper[0], main_to_mapper[1]);
+
     if (pipe(mapper_to_reducer) == -1) goto cleanup;
-    if (pipe(reducer_to_main)   == -1) goto cleanup;
+    log_event("PIPE_CREATED", "mapper_to_reducer read=%d write=%d",
+              mapper_to_reducer[0], mapper_to_reducer[1]);
 
-    /* ----- 3. fork() del processo MAPPER -----
-     * Specifica §5: il fork avviene mentre il processo principale e'
-     * ancora single-threaded. I thread vengono creati DENTRO mapper_proc_main,
-     * cioe' nel figlio. */
+    if (pipe(reducer_to_main) == -1) goto cleanup;
+    log_event("PIPE_CREATED", "reducer_to_main read=%d write=%d",
+              reducer_to_main[0], reducer_to_main[1]);
+
+    /* === 3. fork del processo MAPPER === */
     mapper_pid = fork();
     if (mapper_pid == -1) goto cleanup;
 
     if (mapper_pid == 0) {
-        /* === FIGLIO MAPPER === */
-
-        /* 3.1 Riconnessione di stdin/stdout alle estremita' di pipe.
-         * dup2(src, dst) duplica src su dst, chiudendo dst se aperto.
-         * Dopo questa chiamata, leggere da STDIN_FILENO equivale a
-         * leggere dalla pipe main_to_mapper, e scrivere su STDOUT_FILENO
-         * equivale a scrivere nella pipe mapper_to_reducer. */
+        /* --- FIGLIO MAPPER --- */
         if (dup2(main_to_mapper[0],    STDIN_FILENO)  == -1) _exit(127);
         if (dup2(mapper_to_reducer[1], STDOUT_FILENO) == -1) _exit(127);
 
-        /* 3.2 Chiusura di TUTTI i descrittori originali. I duplicati su
-         * stdin/stdout rimangono validi (puntano alla stessa open file
-         * description del kernel). */
-        close(main_to_mapper[0]);
-        close(main_to_mapper[1]);       /* il mapper non scrive verso se' stesso */
-        close(mapper_to_reducer[0]);    /* il mapper non legge dal reducer */
-        close(mapper_to_reducer[1]);
-        close(reducer_to_main[0]);      /* non interessano al mapper */
-        close(reducer_to_main[1]);
-        close(out_fd);                  /* il mapper non scrive sull'output */
+        close(main_to_mapper[0]);    close(main_to_mapper[1]);
+        close(mapper_to_reducer[0]); close(mapper_to_reducer[1]);
+        close(reducer_to_main[0]);   close(reducer_to_main[1]);
+        close(out_fd);
 
-        /* 3.3 Esegui il corpo del processo mapper. Quando ritorna,
-         * _exit() (non exit()): exit() chiamerebbe gli handler
-         * atexit() del padre, che non vogliamo eseguire qui, e
-         * flusherebbe i buffer stdio (che noi non usiamo ma rischierebbero
-         * di scrivere doppi output se ereditati). */
-        struct mapper_ctx ctx = {
+        struct mapper_ctx mctx = {
             .mapper      = mr->mapper,
             .user_arg    = mr->user_arg,
             .num_threads = mr->attrs.mapper_threads,
             .queue_size  = mr->attrs.queue_size,
         };
-        int rc = mapper_process_main(&ctx);
+
+        log_set_proc_name("mapper");
+        log_event("PROC_START", NULL);
+        int rc = mapper_process_main(&mctx);
+        log_event("PROC_END", "rc=%d", rc);
+        log_cleanup(0);
+
         _exit(rc == 0 ? 0 : 1);
     }
 
-    /* ----- 4. fork() del processo REDUCER ----- */
+    /* === FIX BUG 3: log SOLO nel padre, dopo il _exit del figlio === */
+    log_event("FORK_MAPPER", "pid=%d", (int)mapper_pid);
+
+    /* === 4. fork del processo REDUCER === */
     reducer_pid = fork();
     if (reducer_pid == -1) goto cleanup;
 
     if (reducer_pid == 0) {
-        /* === FIGLIO REDUCER === */
+        /* --- FIGLIO REDUCER --- */
         if (dup2(mapper_to_reducer[0], STDIN_FILENO)  == -1) _exit(127);
         if (dup2(reducer_to_main[1],   STDOUT_FILENO) == -1) _exit(127);
 
-        close(main_to_mapper[0]);
-        close(main_to_mapper[1]);
-        close(mapper_to_reducer[0]);
-        close(mapper_to_reducer[1]);
-        close(reducer_to_main[0]);
-        close(reducer_to_main[1]);
+        close(main_to_mapper[0]);    close(main_to_mapper[1]);
+        close(mapper_to_reducer[0]); close(mapper_to_reducer[1]);
+        close(reducer_to_main[0]);   close(reducer_to_main[1]);
         close(out_fd);
 
-        struct reducer_ctx ctx = {
+        struct reducer_ctx rctx = {
             .reducer     = mr->reducer,
             .user_arg    = mr->user_arg,
             .num_threads = mr->attrs.reducer_threads,
             .queue_size  = mr->attrs.queue_size,
         };
-        int rc = reducer_process_main(&ctx);
+
+        log_set_proc_name("reducer");
+        log_event("PROC_START", NULL);
+        int rc = reducer_process_main(&rctx);
+        log_event("PROC_END", "rc=%d", rc);
+        log_cleanup(0);
+
         _exit(rc == 0 ? 0 : 1);
     }
 
-    /* ----- 5. PADRE: chiusura dei descrittori non utilizzati -----
-     *
-     * Manteniamo aperti solo:
-     *   main_to_mapper[1]    -> qui ci scriviamo le righe da spedire
-     *   reducer_to_main[0]   -> qui leggiamo i risultati dal reducer
-     *   out_fd               -> qui scriviamo l'output finale
-     *
-     * Chiudiamo TUTTO il resto. ATTENZIONE PARTICOLARE alla pipe
-     * mapper_to_reducer: il padre non la usa MAI, ma se ne lasciasse
-     * aperto anche un solo lato di scrittura, il reducer non riceverebbe
-     * mai EOF sul suo stdin -> deadlock permanente. Spec §5.1. */
+    log_event("FORK_REDUCER", "pid=%d", (int)reducer_pid);
+
+    /* === 5. Padre: chiusura descrittori non usati === */
     close(main_to_mapper[0]);    main_to_mapper[0]    = -1;
     close(mapper_to_reducer[0]); mapper_to_reducer[0] = -1;
-    close(mapper_to_reducer[1]); mapper_to_reducer[1] = -1;  /* <-- chiave */
+    close(mapper_to_reducer[1]); mapper_to_reducer[1] = -1;
     close(reducer_to_main[1]);   reducer_to_main[1]   = -1;
 
-    /* ----- 6. Apri la sorgente di input ----- */
+    /* === 6. Apri input === */
     if (file_input_open(&fi, input_path) == -1) goto cleanup;
+    log_event("INPUT_OPEN", "path=%s", input_path);
 
-    /* ----- 7. Loop: leggi righe e spediscile al mapper -----
-     * Ora attivo: ogni riga viene serializzata in un messaggio "Riga"
-     * (intestazione + nome_file + contenuto) e scritta sulla pipe
-     * verso il mapper. */
+    /* === 7. Loop righe -> pipe mapper === */
     {
+        size_t lines_sent = 0;
         mr_file_line_t line;
         int r;
         while ((r = file_input_next(fi, &line)) == 1) {
-            if (protocol_write_line(main_to_mapper[1], &line) == -1) {
-                goto cleanup;
-            }
+            if (protocol_write_line(main_to_mapper[1], &line) == -1) goto cleanup;
+            lines_sent++;
         }
         if (r == -1) goto cleanup;
+        log_event("INPUT_LINES", "count=%zu", lines_sent);
     }
 
-    /* ----- 8. Chiudi la pipe verso il mapper -----
-     * Questo e' il segnale che diciamo "fine input" al mapper. Quando
-     * il mapper legge 0 byte dalla sua stdin, sa che non arriveranno
-     * piu' righe. */
+    /* === 8. Chiudi pipe verso mapper (EOF segnale) === */
     close(main_to_mapper[1]); main_to_mapper[1] = -1;
 
-   /* ----- 9. Loop: leggi risultati dal reducer e scrivili in output -----
-     * Il formato sulla pipe e' identico a quello richiesto sul file
-     * (length-prefixed): non serve deserializzare e riserializzare,
-     * basta un pass-through byte per byte. */
+    /* === 9. Loop risultati dal reducer -> file output === */
     {
         char buf[4096];
         ssize_t n;
@@ -267,23 +225,19 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
         if (n == -1) goto cleanup;
     }
 
-    /* ----- 10. Chiudi la pipe dal reducer ----- */
     close(reducer_to_main[0]); reducer_to_main[0] = -1;
 
-    /* ----- 11. waitpid() esplicito sui figli -----
-     * Usiamo waitpid() con i PID specifici (non wait()) perche'
-     * vogliamo distinguere lo stato di mapper e reducer. */
+    /* === 11. waitpid === */
     {
-        int mapper_status = 0;
-        int reducer_status = 0;
-
+        int mapper_status = 0, reducer_status = 0;
         if (waitpid(mapper_pid, &mapper_status, 0) == -1) goto cleanup;
         mapper_pid = -1;
-
         if (waitpid(reducer_pid, &reducer_status, 0) == -1) goto cleanup;
         reducer_pid = -1;
 
-        /* Successo solo se entrambi sono usciti normalmente con codice 0. */
+        log_event("WAITPID", "mapper_status=%d reducer_status=%d",
+                  WEXITSTATUS(mapper_status), WEXITSTATUS(reducer_status));
+
         if (!WIFEXITED(mapper_status)  || WEXITSTATUS(mapper_status)  != 0 ||
             !WIFEXITED(reducer_status) || WEXITSTATUS(reducer_status) != 0) {
             errno = EIO;
@@ -291,12 +245,9 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
         }
     }
 
-    ret = 0;  /* tutto andato bene */
+    ret = 0;
 
 cleanup:
-    /* ----- 12. Cleanup difensivo -----
-     * Chiude tutto cio' che potrebbe essere ancora aperto. La sentinella
-     * -1 garantisce idempotenza: una risorsa non aperta non viene chiusa. */
     if (fi != NULL) file_input_close(fi);
 
     if (main_to_mapper[0]    != -1) close(main_to_mapper[0]);
@@ -306,14 +257,13 @@ cleanup:
     if (reducer_to_main[0]   != -1) close(reducer_to_main[0]);
     if (reducer_to_main[1]   != -1) close(reducer_to_main[1]);
 
-    /* Se un figlio e' ancora in vita (siamo arrivati al cleanup per un
-     * errore PRIMA del waitpid), proviamo a recuperarlo. Le pipe sono
-     * gia' chiuse, quindi i figli vedranno EOF e termineranno
-     * naturalmente. */
     if (mapper_pid  > 0) waitpid(mapper_pid,  NULL, 0);
     if (reducer_pid > 0) waitpid(reducer_pid, NULL, 0);
 
     if (out_fd != -1) close(out_fd);
+
+    log_event("MR_END", "ret=%d", ret);
+    log_cleanup(1);
 
     return ret;
 }

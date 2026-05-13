@@ -8,31 +8,29 @@
 #include "queue.h"
 #include "protocol.h"
 #include "thrd_utils.h"
+#include "log.h"
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
 #include <unistd.h>
 
-/* ===== Stato condiviso fra tutti i thread del processo mapper =====
- * Allocato sullo stack di mapper_process_main; ogni thread riceve il
- * suo indirizzo come argomento void*. */
 struct mapper_state {
-    /* Per reader e worker */
     thread_queue_t *queue;
-
-    /* Per i worker */
-    mr_mapper_t mapper_fn;     /* callback dell'utente */
-    void       *user_arg;      /* argomento opaco utente */
-    int         reducer_fd;    /* normalmente STDOUT_FILENO */
-    mtx_t       out_mutex;     /* serializza le emit() concorrenti */
+    mr_mapper_t     mapper_fn;
+    void           *user_arg;
+    int             reducer_fd;
+    mtx_t           out_mutex;
+    atomic_size_t   pairs_count;
 };
 
-/* ===== Validazione del token (specifica §3, §10) =====
- * Il token deve essere una stringa C non vuota composta solo da
- * caratteri alfanumerici ASCII [A-Za-z0-9]. */
+struct worker_args {
+    struct mapper_state *state;
+    int id;
+};
 
 static inline int is_token_char(unsigned char c) {
     return (c >= 'A' && c <= 'Z')
@@ -47,31 +45,24 @@ static int validate_token(const char *token, size_t *out_len) {
         if (!is_token_char((unsigned char)token[len])) return -1;
         len++;
     }
-    if (len == 0) return -1;  /* token vuoto non ammesso */
+    if (len == 0) return -1;
     *out_len = len;
     return 0;
 }
 
-/* ===== FUNZIONE EMIT =====
- * E' quella che il framework "presta" alla callback mapper dell'utente.
- * L'utente la chiama come:  emit(token, value, value_size, emit_arg);
- * dove emit_arg e' il puntatore opaco passatogli (in realta' un
- * mapper_state* che noi conosciamo). */
 static int mapper_emit(const char *token,
                        const void *value, size_t value_size,
                        void *emit_arg) {
     struct mapper_state *st = (struct mapper_state *)emit_arg;
 
-    /* Valida il token: se non rispetta il contratto, fallisce. */
     size_t token_len;
     if (validate_token(token, &token_len) == -1) {
         errno = EINVAL;
         return -1;
     }
 
-    fprintf(stderr, "[mapper-emit] tok=\"%s\" val_sz=%zu\n", token, value_size);
-    /* Sezione critica: tutta l'emit (3 write su pipe) deve essere
-     * indivisibile rispetto agli altri worker. */
+    /* FIX BUG A: rimossa la fprintf di debug. */
+
     if (mtx_lock(&st->out_mutex) != thrd_success) {
         errno = EAGAIN;
         return -1;
@@ -83,28 +74,24 @@ static int mapper_emit(const char *token,
 
     mtx_unlock(&st->out_mutex);
 
+    if (rc == 0) atomic_fetch_add(&st->pairs_count, 1);
     return rc;
 }
 
-/* ===== THREAD WORKER =====
- * Pesca dalla coda, costruisce il mr_file_line_t "prestato",
- * invoca la callback utente, libera il messaggio.
- * Esce quando la coda e' vuota e chiusa. */
 static int mapper_worker_main(void *arg) {
-    struct mapper_state *st = (struct mapper_state *)arg;
+    struct worker_args *a   = (struct worker_args *)arg;
+    struct mapper_state *st = a->state;
 
-    for (;;) {
-        mr_value_t item;
-        if (!queue_pop(st->queue, &item)) {
-            /* Coda vuota e chiusa: nessun lavoro residuo. */
-            break;
-        }
+    char thread_name[16];
+    snprintf(thread_name, sizeof thread_name, "worker-%d", a->id);
+    log_set_thread_name(thread_name);
+    log_event("THREAD_START", NULL);
 
+    int my_ret = 0;
+    mr_value_t item;
+    while (queue_pop(st->queue, &item)) {
         mr_line_msg_t *msg = (mr_line_msg_t *)item.data;
 
-        /* Riga "in prestito" all'utente: i puntatori sono validi SOLO
-         * per la durata della chiamata sotto. Documentato in §A.1
-         * della specifica. */
         mr_file_line_t line = {
             .file_name     = msg->file_name,
             .file_name_len = msg->file_name_len,
@@ -113,28 +100,24 @@ static int mapper_worker_main(void *arg) {
             .line_len      = msg->line_len,
         };
 
-        /* Invoca la callback dell'utente. emit_arg = st permette alla
-         * mapper di richiamare emit, che sapra' come accedere al
-         * contesto. */
         int rc = st->mapper_fn(&line, mapper_emit, st, st->user_arg);
 
-        /* Il worker e' proprietario del messaggio dopo il pop:
-         * libera il payload e poi la struct. */
         protocol_line_msg_free(msg);
         free(msg);
 
-        if (rc != 0) return 1;  /* l'utente ha segnalato errore */
+        if (rc != 0) { my_ret = 1; break; }
     }
 
-    return 0;
+    log_event("THREAD_END", "rc=%d", my_ret);
+    return my_ret;
 }
 
-/* ===== THREAD LETTORE =====
- * Identico allo step 1, ma ho RIMOSSO la stampa di debug su stderr
- * (ora che i worker fanno qualcosa, la verifica avviene altrove). */
 static int mapper_reader_main(void *arg) {
     struct mapper_state *st = (struct mapper_state *)arg;
     int ret = 0;
+
+    log_set_thread_name("reader");
+    log_event("THREAD_START", NULL);
 
     for (;;) {
         mr_line_msg_t *msg = calloc(1, sizeof(*msg));
@@ -149,10 +132,10 @@ static int mapper_reader_main(void *arg) {
     }
 
     queue_close(st->queue);
+    log_event("THREAD_END", "rc=%d", ret);
     return ret;
 }
 
-/* ===== PUNTO DI INGRESSO DEL PROCESSO MAPPER ===== */
 int mapper_process_main(struct mapper_ctx *ctx) {
     if (ctx == NULL || ctx->mapper == NULL || ctx->num_threads == 0) {
         return 1;
@@ -160,7 +143,16 @@ int mapper_process_main(struct mapper_ctx *ctx) {
 
     int ret = 0;
 
-    /* --- Inizializzazione coda e stato condiviso --- */
+    /* === FIX BUG B: pre-alloca workers E wargs PRIMA di partire con
+     * i thread. Se uno dei due calloc fallisce, non ci sono thread
+     * in giro da gestire. === */
+    thrd_t *workers = calloc(ctx->num_threads, sizeof(thrd_t));
+    struct worker_args *wargs = calloc(ctx->num_threads, sizeof(*wargs));
+    if (workers == NULL || wargs == NULL) {
+        free(workers); free(wargs);
+        return 1;
+    }
+
     thread_queue_t queue;
     queue_init(&queue);
 
@@ -171,29 +163,25 @@ int mapper_process_main(struct mapper_ctx *ctx) {
         .reducer_fd = STDOUT_FILENO,
     };
     if (mtx_init(&state.out_mutex, mtx_plain) != thrd_success) {
+        free(workers); free(wargs);
         queue_destroy(&queue);
         return 1;
     }
+    atomic_init(&state.pairs_count, 0);
 
-    /* --- Avvio dei thread --- */
+    /* Avvio dei thread */
     thrd_t reader;
     THRD_CHECK(thrd_create(&reader, mapper_reader_main, &state),
                "mapper: thrd_create(reader)");
 
-    thrd_t *workers = calloc(ctx->num_threads, sizeof(thrd_t));
-    if (workers == NULL) {
-        thrd_join(reader, NULL);
-        mtx_destroy(&state.out_mutex);
-        queue_destroy(&queue);
-        return 1;
-    }
     for (size_t i = 0; i < ctx->num_threads; i++) {
-        THRD_CHECK(thrd_create(&workers[i], mapper_worker_main, &state),
+        wargs[i].state = &state;
+        wargs[i].id    = (int)i;
+        THRD_CHECK(thrd_create(&workers[i], mapper_worker_main, &wargs[i]),
                    "mapper: thrd_create(worker)");
     }
 
-    /* --- Join: prima il reader (chiude la coda), poi i worker
-     *     (che svuotano e poi escono). --- */
+    /* Join: prima reader (chiude la coda), poi i worker */
     int reader_ret = 0;
     thrd_join(reader, &reader_ret);
     if (reader_ret != 0) ret = 1;
@@ -203,11 +191,8 @@ int mapper_process_main(struct mapper_ctx *ctx) {
         thrd_join(workers[i], &worker_ret);
         if (worker_ret != 0) ret = 1;
     }
-    free(workers);
 
-    /* --- Drain difensivo: in pratica la coda e' gia' vuota perche'
-     *     i worker l'hanno svuotata. Se per bug fosse rimasto qualcosa,
-     *     lo liberiamo per non leakare. --- */
+    /* Drain difensivo (di norma la coda e' gia' vuota) */
     {
         mr_value_t item;
         while (queue_pop(&queue, &item)) {
@@ -217,6 +202,10 @@ int mapper_process_main(struct mapper_ctx *ctx) {
         }
     }
 
+    log_event("PAIRS_EMITTED", "count=%zu", atomic_load(&state.pairs_count));
+
+    free(workers);
+    free(wargs);
     mtx_destroy(&state.out_mutex);
     queue_destroy(&queue);
 
