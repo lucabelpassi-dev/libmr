@@ -39,6 +39,7 @@ clean:
 	rm -rf $(BUILD_DIR)/* $(LIB_DIR)/*
 	@$(MAKE) -C $(EXAMPLES_DIR) clean 2>/dev/null || true
 	@$(MAKE) -C $(TESTS_DIR) clean 2>/dev/null || true
+	rm -f mr.log doc/relazione.pdf
 	@echo "🧹 Pulizia completata"
 
 # Rigenerare relazione.pdf dal markdown

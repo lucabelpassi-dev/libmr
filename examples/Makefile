@@ -22,4 +22,4 @@ print_output: print_output.c
 	$(CC) $(CFLAGS) $< -o $@
 
 clean:
-	rm -f $(EXAMPLES) *.o
+	rm -f $(EXAMPLES) *.o mr.log

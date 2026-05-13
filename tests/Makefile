@@ -34,4 +34,4 @@ run: all
 	@bash test_e2e.sh
 
 clean:
-	rm -f $(UNIT_TESTS) *.o
+	rm -f $(UNIT_TESTS) *.o mr.log
