@@ -13,6 +13,7 @@
 #include "mapper_proc.h"
 #include "reducer_proc.h"
 #include "file_input.h"
+#include "protocol.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -233,15 +234,16 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
     if (file_input_open(&fi, input_path) == -1) goto cleanup;
 
     /* ----- 7. Loop: leggi righe e spediscile al mapper -----
-     * Per la passata 1, drenamo soltanto: nella passata 2 qui andra'
-     * la serializzazione + writen(main_to_mapper[1], ...). */
+     * Ora attivo: ogni riga viene serializzata in un messaggio "Riga"
+     * (intestazione + nome_file + contenuto) e scritta sulla pipe
+     * verso il mapper. */
     {
         mr_file_line_t line;
         int r;
         while ((r = file_input_next(fi, &line)) == 1) {
-            /* TODO passata 2: serializza header + file_name + line e
-             *                 inviala su main_to_mapper[1] con writen(). */
-            (void)line;
+            if (protocol_write_line(main_to_mapper[1], &line) == -1) {
+                goto cleanup;
+            }
         }
         if (r == -1) goto cleanup;
     }
