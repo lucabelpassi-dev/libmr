@@ -24,16 +24,16 @@ static void test_basic_push_pop(void) {
     queue_push(&q, (mr_value_t){ .data = v2, .size = sizeof(int) });
 
     mr_value_t out;
-    assert(queue_pop(&q, &out) == true);
+    assert(queue_pop(&q, &out));
     assert(*(const int *)out.data == 42);
     free((void *)out.data);
 
-    assert(queue_pop(&q, &out) == true);
+    assert(queue_pop(&q, &out));
     assert(*(const int *)out.data == 99);
     free((void *)out.data);
 
     queue_close(&q);
-    assert(queue_pop(&q, &out) == false);  /* coda vuota e chiusa */
+    assert(!queue_pop(&q, &out));  /* coda vuota e chiusa */
 
     queue_destroy(&q);
 }

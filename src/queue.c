@@ -6,7 +6,7 @@
 void queue_init(thread_queue_t *q) {
     q->head = NULL;
     q->tail = NULL;
-    q->is_closed = false;
+    q->is_closed = 0;
     mtx_init(&q->mutex, mtx_plain);
     cnd_init(&q->cond);
 }
@@ -41,7 +41,7 @@ void queue_push(thread_queue_t *q, mr_value_t value) {
 }
 
 // Il Consumatore pesca un elemento. Ritorna 'false' se la coda è chiusa e vuota.
-bool queue_pop(thread_queue_t *q, mr_value_t *out_value) {
+int queue_pop(thread_queue_t *q, mr_value_t *out_value) {
     mtx_lock(&q->mutex);
 
     // Se la coda è vuota ma NON è chiusa, il worker si mette a dormire aspettando dati
@@ -52,7 +52,7 @@ bool queue_pop(thread_queue_t *q, mr_value_t *out_value) {
     // Se ci svegliamo e la coda è vuota E chiusa, significa che abbiamo finito il lavoro
     if (q->head == NULL && q->is_closed) {
         mtx_unlock(&q->mutex);
-        return false; 
+        return 0; 
     }
 
     // Altrimenti, prendiamo l'elemento in cima (head)
@@ -67,13 +67,13 @@ bool queue_pop(thread_queue_t *q, mr_value_t *out_value) {
     mtx_unlock(&q->mutex);
     free(temp); // Puliamo la memoria del nodo
     
-    return true; // Abbiamo pescato con successo
+    return 1; // Abbiamo pescato con successo
 }
 
 // Chiude la coda (non accetta più dati) e sveglia tutti i worker addormentati
 void queue_close(thread_queue_t *q) {
     mtx_lock(&q->mutex);
-    q->is_closed = true;
+    q->is_closed = 1;
     cnd_broadcast(&q->cond); // SVEGLIA TUTTI! È l'ora di chiudere.
     mtx_unlock(&q->mutex);
 }
