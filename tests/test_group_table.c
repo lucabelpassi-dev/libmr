@@ -1,6 +1,6 @@
 #include "group_table.h"
 
-#include <assert.h>
+#include <assert.h> // macro standard che verifica le invarianti e in caso di failure stampa file/riga e termina.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

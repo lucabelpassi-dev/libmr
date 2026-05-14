@@ -14,7 +14,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static inline int is_word_char(unsigned char c) {
+// static limita al file, inline suggerisce al compilatore di farla inlining perché è chiamata in un loop stretto.
+static inline int is_word_char(unsigned char c) { 
     return (c >= 'A' && c <= 'Z')
         || (c >= 'a' && c <= 'z')
         || (c >= '0' && c <= '9');

@@ -33,6 +33,7 @@ struct group_table {
 
 /* ===== Funzione di hash (FNV-1a 32-bit) =====
  * Semplice, veloce, distribuzione decente per stringhe corte. */
+/* Distribuisce uniformemente token alfanumerici sui bucket. */
 static uint32_t fnv1a_hash(const char *data, size_t len) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < len; i++) {
