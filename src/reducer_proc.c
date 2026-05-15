@@ -37,7 +37,7 @@ struct reducer_state {
     size_t *out_buffer_caps;
 
     atomic_size_t next_entry_idx;
-    atomic_size_t results_count;     /* nuovo: contatore risultati emessi */
+    atomic_size_t results_count;     
 
     mr_reducer_t reducer_fn;
     void        *user_arg;
