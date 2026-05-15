@@ -32,9 +32,9 @@ struct reducer_state {
     group_entry_t **entries;
     size_t          entries_count;
 
-    char  **out_buffers;
-    size_t *out_buffer_lens;
-    size_t *out_buffer_caps;
+    char  **out_buffers; // out_buffers[i] = puntatore al buffer del gruppo i
+    size_t *out_buffer_lens; // out_buffer_lens[i] = quanti byte ha scritto finora il worker
+    size_t *out_buffer_caps; // out_buffer_caps[i] = capienza attuale del buffer
 
     atomic_size_t next_entry_idx;
     atomic_size_t results_count;     
