@@ -111,7 +111,7 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
     if (out_fd == -1) goto cleanup;
     log_event("OUTPUT_OPEN", "path=%s fd=%d", output_path, out_fd);
 
-    /* === 2. Crea le tre pipe (FIX BUG 2: log distinti per ciascuna) === */
+    /* === 2. Crea le tre pipe === */
     if (pipe(main_to_mapper) == -1) goto cleanup;
     log_event("PIPE_CREATED", "main_to_mapper read=%d write=%d",
               main_to_mapper[0], main_to_mapper[1]);

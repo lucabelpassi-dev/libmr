@@ -46,3 +46,8 @@ clean:
 relazione: doc/relazione.md
 	pandoc doc/relazione.md -o doc/relazione.pdf \
 		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
+
+# DA RIMUOVERE 
+domande: ../domande/domande-orale.md
+	pandoc ../domande/domande-orale.md -o ../domande/domande-orale.pdf \
+		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
