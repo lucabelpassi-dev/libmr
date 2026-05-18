@@ -48,6 +48,6 @@ relazione: doc/relazione.md
 		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
 
 # DA RIMUOVERE
-domande: doc/domande-orale.md
-	pandoc doc/domande-orale.md -o doc/domande-orale.pdf \
+domande: ../schemi/domande-orale.md
+	pandoc ../schemi/domande-orale.md -o ../schemi/domande-orale.pdf \
 		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
