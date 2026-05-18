@@ -4,32 +4,32 @@
 #include <stddef.h>
 
 /* Handle opaco di una elaborazione */
-typedef struct mr *mr_t;
+typedef struct mr *mr_t;        /* l'utente vede solo il puntatore, la struct è definita in mr.c */
 
 /* Attributi: struct VALORE, completamente definita */
 typedef struct {
     size_t mapper_threads;
     size_t reducer_threads;
-    size_t queue_size;        /* capacità code interne, NON pipe */
-    const char *log_file;     /* NULL = default ragionevole */
+    size_t queue_size;          /* in realtà illimitata nella mia implementazione */
+    const char *log_file;       /* percorso del file di log. NULL = default (mr.log nella directory corrente) */
 } mr_attr_t;
 
 /* Riga logica passata al mapper */
 typedef struct {
-    const char *file_name;
-    size_t file_name_len;
-    unsigned long line_number;
-    const char *line;
-    size_t line_len;
+    const char *file_name;      /* nome del file da cui proviene una riga */
+    size_t file_name_len;       /* lunghezza in byte del nome del file*/
+    unsigned long line_number;  /* numero di riga all'interno del file (partendo da 1) */
+    const char *line;           /* puntatore ai byte della riga */
+    size_t line_len;            /* lunghezza in byte della riga senza il \n finale */
 } mr_file_line_t;
 
-/* Valore opaco: byte di lunghezza nota, NON stringa C */
+/* Un singolo valore opaco: una coppia <puntatore, lunghezza> */
 typedef struct {
-    const void *data;
+    const void *data;           /* void * --> puntatore a "qualcosa" */
     size_t size;
 } mr_value_t;
 
-/* Callback di emit (fornite dal framework alle funzioni utente) */
+/* Callback di emit (fornite dal framework alle funzioni utente) - puntatore a funzione */
 typedef int (*mr_emit_pair_t)(
     const char *token,
     const void *value,
