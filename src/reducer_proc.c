@@ -233,7 +233,7 @@ int reducer_process_main(struct reducer_ctx *ctx) {
         free(workers);
         free(wargs);
 
-        /* === FASE 3: flush ordinato === */
+        /* === FASE 3: flush ordinato (invio dati alla pipe reducer_to_main con la funzione writen) === */
         if (ret == 0) {
             for (size_t i = 0; i < state.entries_count; i++) {
                 if (state.out_buffer_lens[i] > 0) {
