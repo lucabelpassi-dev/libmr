@@ -30,7 +30,7 @@ typedef struct {
 } mr_value_t;
 
 /* Callback di emit (fornite dal framework alle funzioni utente) - puntatore a funzione */
-typedef int (*mr_emit_pair_t)(
+typedef int (*mr_emit_pair_t)( /* int è il tipo di ritorno, *mr_emit_pair_t il nome del tipo, dentro abbiamo la lista degli argomenti*/
     const char *token,
     const void *value,
     size_t value_size,
