@@ -154,7 +154,6 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
         _exit(rc == 0 ? 0 : 1);
     }
 
-    /* === FIX BUG 3: log SOLO nel padre, dopo il _exit del figlio === */
     log_event("FORK_MAPPER", "pid=%d", (int)mapper_pid);
 
     /* === 4. fork del processo REDUCER === */
