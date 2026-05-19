@@ -18,20 +18,23 @@
 #include <threads.h>
 #include <unistd.h>
 
+/* ----- Stato interno del processo mapper ----- */
 struct mapper_state {
     thread_queue_t *queue;
     mr_mapper_t     mapper_fn;
     void           *user_arg;
     int             reducer_fd;
     mtx_t           out_mutex;
-    atomic_size_t   pairs_count;
+    atomic_size_t   pairs_count; /* per il log */
 };
 
+/* ----- Struct passata ai thread worker ----- */
 struct worker_args {
-    struct mapper_state *state;
-    int id;
+    struct mapper_state *state;  /* stato condiviso, uguale per tutti i worker */
+    int id;                      /* id univoco per thread */
 };
 
+/* Ritorna 1 se il byte è alfanumerico ASCII, 0 altrimenti */
 static inline int is_token_char(unsigned char c) {
     return (c >= 'A' && c <= 'Z')
         || (c >= 'a' && c <= 'z')
@@ -41,8 +44,16 @@ static inline int is_token_char(unsigned char c) {
 static int validate_token(const char *token, size_t *out_len) {
     if (token == NULL) return -1;
     size_t len = 0;
+
+    /* Il cast a unsigned char che segue è necessario per avere
+     * confronti sicuri. I char sono signed di defalut: se
+     * token[len] fosse un char con bit più significativo a 1 (es. 'é'),
+     * viene interpretato come un numero negativo, e i confronti con 'A',
+     * 'z', '0' etc. potrebbero non funzionare correttamente.
+    */
+
     while (token[len] != '\0') {
-        if (!is_token_char((unsigned char)token[len])) return -1;
+        if (!is_token_char((unsigned char)token[len])) return -1; 
         len++;
     }
     if (len == 0) return -1;
@@ -50,9 +61,12 @@ static int validate_token(const char *token, size_t *out_len) {
     return 0;
 }
 
+/* Funzione di emissione delle coppie <token, value> chiamata dall'utente nella sua mapper function */
 static int mapper_emit(const char *token,
                        const void *value, size_t value_size,
                        void *emit_arg) {
+
+    /* Cast dell'emit_arg opaco al tipo vero */
     struct mapper_state *st = (struct mapper_state *)emit_arg;
 
     size_t token_len;
@@ -60,8 +74,6 @@ static int mapper_emit(const char *token,
         errno = EINVAL;
         return -1;
     }
-
-    /* FIX BUG A: rimossa la fprintf di debug. */
 
     if (mtx_lock(&st->out_mutex) != thrd_success) {
         errno = EAGAIN;
@@ -78,13 +90,15 @@ static int mapper_emit(const char *token,
     return rc;
 }
 
+/* Funzione svolta da ciascun worker thread */
 static int mapper_worker_main(void *arg) {
     struct worker_args *a   = (struct worker_args *)arg;
     struct mapper_state *st = a->state;
 
+    /* preparo il log */
     char thread_name[16];
     snprintf(thread_name, sizeof thread_name, "worker-%d", a->id);
-    log_set_thread_name(thread_name);
+    log_set_thread_name(thread_name);   /* il nome finisce in _Thread_local */
     log_event("THREAD_START", NULL);
 
     int my_ret = 0;
@@ -100,7 +114,7 @@ static int mapper_worker_main(void *arg) {
             .line_len      = msg->line_len,
         };
 
-        int rc = st->mapper_fn(&line, mapper_emit, st, st->user_arg);
+        int rc = st->mapper_fn(&line, mapper_emit, st, st->user_arg); /* chiamata alla mapper function dell'utente */
 
         protocol_line_msg_free(msg);
         free(msg);
@@ -112,6 +126,7 @@ static int mapper_worker_main(void *arg) {
     return my_ret;
 }
 
+/* Funzione svolta dal reader thread */
 static int mapper_reader_main(void *arg) {
     struct mapper_state *st = (struct mapper_state *)arg;
     int ret = 0;
@@ -124,8 +139,8 @@ static int mapper_reader_main(void *arg) {
         if (msg == NULL) { ret = 1; break; }
 
         int r = protocol_read_line(STDIN_FILENO, msg);
-        if (r == 0)  { free(msg); break; }
-        if (r == -1) { free(msg); ret = 1; break; }
+        if (r == 0)  { free(msg); break; }              // EOF
+        if (r == -1) { free(msg); ret = 1; break; }     // errore
 
         mr_value_t item = { .data = msg, .size = sizeof(*msg) };
         queue_push(st->queue, item);
@@ -136,6 +151,7 @@ static int mapper_reader_main(void *arg) {
     return ret;
 }
 
+/* Funzione principale del processo mapper */
 int mapper_process_main(struct mapper_ctx *ctx) {
     if (ctx == NULL || ctx->mapper == NULL || ctx->num_threads == 0) {
         return 1;
@@ -143,9 +159,6 @@ int mapper_process_main(struct mapper_ctx *ctx) {
 
     int ret = 0;
 
-    /* === FIX BUG B: pre-alloca workers E wargs PRIMA di partire con
-     * i thread. Se uno dei due calloc fallisce, non ci sono thread
-     * in giro da gestire. === */
     thrd_t *workers = calloc(ctx->num_threads, sizeof(thrd_t));
     struct worker_args *wargs = calloc(ctx->num_threads, sizeof(*wargs));
     if (workers == NULL || wargs == NULL) {
