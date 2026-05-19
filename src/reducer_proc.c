@@ -26,28 +26,31 @@
 #include <threads.h>
 #include <unistd.h>
 
+/* ----- Stato interno del processo reducer ----- */
 struct reducer_state {
-    group_table_t  *table;
+    group_table_t  *table;          /* hash table del raggruppamento */
 
-    group_entry_t **entries;
+    group_entry_t **entries;        /* array di gruppi finalizzati, ordinati lessicograficamente */
     size_t          entries_count;
 
-    char  **out_buffers; // out_buffers[i] = puntatore al buffer del gruppo i
-    size_t *out_buffer_lens; // out_buffer_lens[i] = quanti byte ha scritto finora il worker
-    size_t *out_buffer_caps; // out_buffer_caps[i] = capienza attuale del buffer
+    char  **out_buffers;            /* out_buffers[i] = puntatore al buffer del gruppo i */
+    size_t *out_buffer_lens;        /* out_buffer_lens[i] = quanti byte ha scritto finora il worker */
+    size_t *out_buffer_caps;        /* out_buffer_caps[i] = capienza attuale del buffer */
 
-    atomic_size_t next_entry_idx;
+    atomic_size_t next_entry_idx;   /* contatore atomico per il work stealing (gestione delle entries) */
     atomic_size_t results_count;     
 
     mr_reducer_t reducer_fn;
     void        *user_arg;
 };
 
+/* ----- Struct passata ai thread worker ----- */
 struct worker_args {
     struct reducer_state *state;
     int id;
 };
 
+/* Ritorna 1 se il byte è alfanumerico ASCII, 0 altrimenti */
 static inline int is_token_char(unsigned char c) {
     return (c >= 'A' && c <= 'Z')
         || (c >= 'a' && c <= 'z')
@@ -57,6 +60,14 @@ static inline int is_token_char(unsigned char c) {
 static int validate_token(const char *token, size_t *out_len) {
     if (token == NULL) return -1;
     size_t len = 0;
+
+    /* Il cast a unsigned char che segue è necessario per avere
+     * confronti sicuri. I char sono signed di defalut: se
+     * token[len] fosse un char con bit più significativo a 1 (es. 'é'),
+     * viene interpretato come un numero negativo, e i confronti con 'A',
+     * 'z', '0' etc. potrebbero non funzionare correttamente.
+    */
+
     while (token[len] != '\0') {
         if (!is_token_char((unsigned char)token[len])) return -1;
         len++;
@@ -67,12 +78,13 @@ static int validate_token(const char *token, size_t *out_len) {
 }
 
 struct reducer_emit_ctx {
-    char   **buf_p;
-    size_t  *len_p;
-    size_t  *cap_p;
+    char   **buf_p;                   /* puntatore al puntatore al buffer del gruppo (out_buffers[i]) */
+    size_t  *len_p;                   /* puntatore a quanti byte ha scritto finora il worker (puntatore a out_buffer_lens[i]) */
+    size_t  *cap_p;                   /* puntatore alla capienza attuale del buffer (puntatore a out_buffer_caps[i]) */
     atomic_size_t *results_counter;   /* puntatore al contatore globale */
 };
 
+/* Funzione di scrittura nel buffer */
 static int reducer_emit(const char *token,
                         const void *result, size_t result_size,
                         void *emit_arg) {
@@ -84,12 +96,16 @@ static int reducer_emit(const char *token,
         return -1;
     }
 
+    /* "intestazione" del messaggio */
     mr_result_header_t hdr = {
         .token_len  = (int)token_len,
         .result_len = (int)result_size,
     };
+
+    /* quanti byte metterò nel buffer */
     size_t total = sizeof(hdr) + token_len + result_size;
 
+    /* realloc se serve: raddoppio capacità */
     if (*ec->len_p + total > *ec->cap_p) {
         size_t new_cap = (*ec->cap_p == 0) ? 256 : *ec->cap_p * 2;
         while (new_cap < *ec->len_p + total) new_cap *= 2;

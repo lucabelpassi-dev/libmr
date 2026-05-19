@@ -1,9 +1,9 @@
-/* reducer_proc.h */
 #ifndef REDUCER_PROC_H
 #define REDUCER_PROC_H
 
 #include "mr.h"
 
+/* Contesto interno del processo reducer */
 struct reducer_ctx {
     mr_reducer_t reducer;
     void        *user_arg;
