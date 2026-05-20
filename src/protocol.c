@@ -5,6 +5,9 @@
 #include <errno.h>
 #include <limits.h>
 
+/* src/protocol.c: funzioni che raccontano che forma hanno e come viaggiano i dati sulle pipe del framework */
+
+/* Funzione che itera per forzare la lettura di tutti gli n byte richiesti */
 ssize_t readn(int fd, void *ptr, size_t n) {
     size_t nleft = n;
     ssize_t nread;
@@ -22,6 +25,7 @@ ssize_t readn(int fd, void *ptr, size_t n) {
     return (n - nleft);
 }
 
+/* Funzione che itera per forzare la scrittura di tutti gli n byte richiesti */
 ssize_t writen(int fd, const void *ptr, size_t n) {
     size_t nleft = n;
     ssize_t nwritten;
@@ -38,17 +42,13 @@ ssize_t writen(int fd, const void *ptr, size_t n) {
     return n;
 }
 
-/* Aggiungo le funzioni di alto livello.
-Sono tutte costruite sullo stesso schema: "scrivi intestazione, scrivi payload" / "leggi intestazione, alloca buffer, leggi payload". */
-
 /* ============================================================
  *   Helper interno: validazione lunghezza letta dall'intestazione
- * ============================================================
- * Spec §10: "Ogni lunghezza ricevuta deve essere controllata prima
- * di essere usata: non sono ammessi valori negativi, e l'implementazione
- * deve rifiutare messaggi la cui lunghezza ecceda i limiti ragionevoli". */
-#define PROTOCOL_MAX_PAYLOAD (16 * 1024 * 1024)  /* 16 MB per campo, generoso */
+ * ============================================================ */
 
+#define PROTOCOL_MAX_PAYLOAD (16 * 1024 * 1024)  /* 16MB per campo */
+
+/* Misura di sicurezza per essere certi che in una pipe viaggino header "sensati" */
 static int validate_len(int n) {
     if (n < 0)                        return -1;
     if ((size_t)n > PROTOCOL_MAX_PAYLOAD) return -1;
@@ -59,6 +59,7 @@ static int validate_len(int n) {
  *   MESSAGGIO "RIGA"
  * ============================================================ */
 
+/* Serializza una mr_file_line_t in tre writen consecutive: header, file_name, line. */
 int protocol_write_line(int fd, const mr_file_line_t *line) {
     if (line == NULL) { errno = EINVAL; return -1; }
     if (line->file_name_len > INT_MAX || line->line_len > INT_MAX) {
@@ -72,28 +73,27 @@ int protocol_write_line(int fd, const mr_file_line_t *line) {
         .line_number   = line->line_number,
     };
 
-    /* 2. Scrivi intestazione + payload con UNA pipeline di writen.
-     *    Non chiamiamo write() bensi' writen() perche' una singola
-     *    write() potrebbe trasferire meno byte del richiesto. */
-    if (writen(fd, &hdr, sizeof hdr) == -1) return -1;
+    /* 2. Scrivi intestazione + payload con una pipeline di writen. */
+    if (writen(fd, &hdr, sizeof hdr) == -1) return -1;                      // header 
     if (line->file_name_len > 0 &&
-        writen(fd, line->file_name, line->file_name_len) == -1) return -1;
+        writen(fd, line->file_name, line->file_name_len) == -1) return -1;  // file_name (se non vuoto)
     if (line->line_len > 0 &&
-        writen(fd, line->line, line->line_len) == -1) return -1;
+        writen(fd, line->line, line->line_len) == -1) return -1;            // line (se non vuota)
 
     return 0;
 }
 
+/* Lettura messaggio "riga" */
 int protocol_read_line(int fd, mr_line_msg_t *out) {
     if (out == NULL) { errno = EINVAL; return -1; }
     out->file_name = NULL;
     out->line      = NULL;
 
-    /* 1. Leggi l'intestazione (16 byte) */
+    /* 1. Leggi l'header (16 byte) */
     mr_line_header_t hdr;
     ssize_t r = readn(fd, &hdr, sizeof hdr);
     if (r == 0)             return 0;   /* EOF pulito: nessun messaggio iniziato */
-    if (r != (ssize_t)sizeof hdr) {     /* EOF a meta' intestazione = errore */
+    if (r != (ssize_t)sizeof hdr) {     /* EOF a metà header = errore */
         if (r >= 0) errno = EPROTO;
         return -1;
     }
@@ -104,7 +104,7 @@ int protocol_read_line(int fd, mr_line_msg_t *out) {
         errno = EPROTO; return -1;
     }
 
-    /* 3. Alloca i buffer (con +1 byte per il '\0' terminatore di comodo) */
+    /* 3. Alloca i buffer (con +1 byte per il '\0' terminatore) */
     out->file_name = malloc((size_t)hdr.file_name_len + 1);
     out->line      = malloc((size_t)hdr.line_len + 1);
     if (out->file_name == NULL || out->line == NULL) goto err;
@@ -115,9 +115,7 @@ int protocol_read_line(int fd, mr_line_msg_t *out) {
     if (hdr.line_len > 0 &&
         readn(fd, out->line, hdr.line_len) != hdr.line_len) goto err;
 
-    /* 5. NUL-terminazione di comodo. Il token e la riga, lato applicativo,
-     *    possono cosi' essere usati anche come stringhe C. La lunghezza
-     *    "logica" resta quella dei campi _len. */
+    /* 5. NUL-terminazione */
     out->file_name[hdr.file_name_len] = '\0';
     out->line[hdr.line_len]           = '\0';
     out->file_name_len = (size_t)hdr.file_name_len;
