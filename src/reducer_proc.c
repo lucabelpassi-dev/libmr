@@ -9,7 +9,6 @@
  *   FASE 3: il main thread flusha i buffer in ordine lessicografico
  *           sulla pipe verso il processo principale.
  *
- * Spec di riferimento: §6.2, §8.
  */
 
 #include "reducer_proc.h"
@@ -26,28 +25,31 @@
 #include <threads.h>
 #include <unistd.h>
 
+/* ----- Stato interno del processo reducer ----- */
 struct reducer_state {
-    group_table_t  *table;
+    group_table_t  *table;          /* hash table del raggruppamento */
 
-    group_entry_t **entries;
+    group_entry_t **entries;        /* array di gruppi finalizzati, ordinati lessicograficamente */
     size_t          entries_count;
 
-    char  **out_buffers;
-    size_t *out_buffer_lens;
-    size_t *out_buffer_caps;
+    char  **out_buffers;            /* out_buffers[i] = puntatore al buffer del gruppo i */
+    size_t *out_buffer_lens;        /* out_buffer_lens[i] = quanti byte ha scritto finora il worker */
+    size_t *out_buffer_caps;        /* out_buffer_caps[i] = capienza attuale del buffer */
 
-    atomic_size_t next_entry_idx;
-    atomic_size_t results_count;     /* nuovo: contatore risultati emessi */
+    atomic_size_t next_entry_idx;   /* contatore atomico per il work stealing (gestione delle entries) */
+    atomic_size_t results_count;     
 
     mr_reducer_t reducer_fn;
     void        *user_arg;
 };
 
+/* ----- Struct passata ai thread worker ----- */
 struct worker_args {
     struct reducer_state *state;
     int id;
 };
 
+/* Ritorna 1 se il byte è alfanumerico ASCII, 0 altrimenti */
 static inline int is_token_char(unsigned char c) {
     return (c >= 'A' && c <= 'Z')
         || (c >= 'a' && c <= 'z')
@@ -57,6 +59,14 @@ static inline int is_token_char(unsigned char c) {
 static int validate_token(const char *token, size_t *out_len) {
     if (token == NULL) return -1;
     size_t len = 0;
+
+    /* Il cast a unsigned char che segue è necessario per avere
+     * confronti sicuri. I char sono signed di defalut: se
+     * token[len] fosse un char con bit più significativo a 1 (es. 'é'),
+     * viene interpretato come un numero negativo, e i confronti con 'A',
+     * 'z', '0' etc. potrebbero non funzionare correttamente.
+    */
+
     while (token[len] != '\0') {
         if (!is_token_char((unsigned char)token[len])) return -1;
         len++;
@@ -67,12 +77,13 @@ static int validate_token(const char *token, size_t *out_len) {
 }
 
 struct reducer_emit_ctx {
-    char   **buf_p;
-    size_t  *len_p;
-    size_t  *cap_p;
+    char   **buf_p;                   /* puntatore al puntatore al buffer del gruppo (out_buffers[i]) */
+    size_t  *len_p;                   /* puntatore a quanti byte ha scritto finora il worker (puntatore a out_buffer_lens[i]) */
+    size_t  *cap_p;                   /* puntatore alla capienza attuale del buffer (puntatore a out_buffer_caps[i]) */
     atomic_size_t *results_counter;   /* puntatore al contatore globale */
 };
 
+/* Funzione di scrittura nel buffer */
 static int reducer_emit(const char *token,
                         const void *result, size_t result_size,
                         void *emit_arg) {
@@ -84,12 +95,16 @@ static int reducer_emit(const char *token,
         return -1;
     }
 
+    /* "intestazione" del messaggio */
     mr_result_header_t hdr = {
         .token_len  = (int)token_len,
         .result_len = (int)result_size,
     };
+
+    /* quanti byte metterò nel buffer */
     size_t total = sizeof(hdr) + token_len + result_size;
 
+    /* realloc se serve: raddoppio capacità */
     if (*ec->len_p + total > *ec->cap_p) {
         size_t new_cap = (*ec->cap_p == 0) ? 256 : *ec->cap_p * 2;
         while (new_cap < *ec->len_p + total) new_cap *= 2;
@@ -99,16 +114,19 @@ static int reducer_emit(const char *token,
         *ec->cap_p = new_cap;
     }
 
+    /* memcpy per header, byte del token e byte del risultato */
     char *dst = *ec->buf_p + *ec->len_p;
     memcpy(dst, &hdr, sizeof hdr);                       dst += sizeof hdr;
     memcpy(dst, token, token_len);                       dst += token_len;
     if (result_size > 0) memcpy(dst, result, result_size);
-    *ec->len_p += total;
+    *ec->len_p += total; // aggiorno la lunghezza usata del buffer 
 
+    /* aumento il contatore dei risultati (per RESULTS_EMITTED nel log) */
     atomic_fetch_add(ec->results_counter, 1);
     return 0;
 }
 
+/* Funzione del reader thread */
 static int reducer_reader_main(void *arg) {
     struct reducer_state *st = (struct reducer_state *)arg;
     int ret = 0;
@@ -119,8 +137,8 @@ static int reducer_reader_main(void *arg) {
     for (;;) {
         mr_pair_msg_t pair;
         int r = protocol_read_pair(STDIN_FILENO, &pair);
-        if (r == 0) break;
-        if (r == -1) { ret = 1; break; }
+        if (r == 0) break;                                  // EOF
+        if (r == -1) { ret = 1; break; }                    // errore
 
         int ins = group_table_insert(st->table,
                                      pair.token, pair.token_len,
@@ -133,6 +151,7 @@ static int reducer_reader_main(void *arg) {
     return ret;
 }
 
+/* Funzione dei worker threads */
 static int reducer_worker_main(void *arg) {
     struct worker_args  *a  = (struct worker_args *)arg;
     struct reducer_state *st = a->state;
@@ -142,13 +161,15 @@ static int reducer_worker_main(void *arg) {
     log_set_thread_name(thread_name);
     log_event("THREAD_START", NULL);
 
+    /* loop con contatore atomico */
     int my_ret = 0;
     for (;;) {
         size_t i = atomic_fetch_add(&st->next_entry_idx, 1);
-        if (i >= st->entries_count) break;
+        if (i >= st->entries_count) break;  // esce se il worker si prende un indice fuori range
 
         group_entry_t *entry = st->entries[i];
 
+        /* costruisco contesto per ogni entry */
         struct reducer_emit_ctx ec = {
             .buf_p           = &st->out_buffers[i],
             .len_p           = &st->out_buffer_lens[i],
@@ -156,6 +177,7 @@ static int reducer_worker_main(void *arg) {
             .results_counter = &st->results_count,
         };
 
+        /* chiamata alla reader function dell'utente */
         int rc = st->reducer_fn(entry->token,
                                 entry->values, entry->values_count,
                                 reducer_emit, &ec,
@@ -167,6 +189,7 @@ static int reducer_worker_main(void *arg) {
     return my_ret;
 }
 
+/* Funzione principale del processo reducer */
 int reducer_process_main(struct reducer_ctx *ctx) {
     if (ctx == NULL || ctx->reducer == NULL || ctx->num_threads == 0) {
         return 1;
@@ -233,7 +256,7 @@ int reducer_process_main(struct reducer_ctx *ctx) {
         free(workers);
         free(wargs);
 
-        /* === FASE 3: flush ordinato === */
+        /* === FASE 3: flush ordinato (invio dati alla pipe reducer_to_main con la funzione writen) === */
         if (ret == 0) {
             for (size_t i = 0; i < state.entries_count; i++) {
                 if (state.out_buffer_lens[i] > 0) {
@@ -251,6 +274,7 @@ int reducer_process_main(struct reducer_ctx *ctx) {
     log_event("RESULTS_EMITTED", "count=%zu", atomic_load(&state.results_count));
 
 cleanup:
+    /* state.out_buffers è array di puntatori, libero prima gli elementi e poi l'array stesso */
     if (state.out_buffers != NULL) {
         for (size_t i = 0; i < state.entries_count; i++) {
             free(state.out_buffers[i]);

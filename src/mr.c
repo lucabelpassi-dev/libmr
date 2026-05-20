@@ -26,20 +26,21 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* ----- Definizione "privata" del tipo opaco esposto in mr.h ----- */
+/* Definizione "privata" del tipo opaco esposto in mr.h */
 struct mr {
-    mr_attr_t    attrs;
-    mr_mapper_t  mapper;
-    mr_reducer_t reducer;
-    void        *user_arg;
+    mr_attr_t    attrs;             /* copia degli attributi dell'utente */
+    mr_mapper_t  mapper;            /* puntatore alla funzione mapper dell'utente */
+    mr_reducer_t reducer;           /* puntatore alla funzione reducer dell'utente */
+    void        *user_arg;          /* puntatore opaco dell'utente (lo ritroverà nelle proprie callback) */
 };
 
+/* Deep copy della configurazione dell'utente, per usarla anche se la distrugge prima di mr_start */
 static int copy_attrs(mr_attr_t *dst, const mr_attr_t *src) {
     dst->mapper_threads  = src->mapper_threads;
     dst->reducer_threads = src->reducer_threads;
     dst->queue_size      = src->queue_size;
     if (src->log_file != NULL) {
-        char *copy = strdup(src->log_file);
+        char *copy = strdup(src->log_file); /* alloco un nuovo buffer per evitare che dst e src puntino allo stesso indirizzo */
         if (copy == NULL) return -1;
         dst->log_file = copy;
     } else {
@@ -58,7 +59,7 @@ int mr_create(mr_t *mr, const mr_attr_t *attr,
         errno = EINVAL; return -1;
     }
 
-    struct mr *m = calloc(1, sizeof(*m));
+    struct mr *m = calloc(1, sizeof(*m)); /* alloco lo spazio per la struttura mr */
     if (m == NULL) return -1;
     if (copy_attrs(&m->attrs, attr) == -1) { free(m); return -1; }
 
@@ -71,7 +72,7 @@ int mr_create(mr_t *mr, const mr_attr_t *attr,
 
 int mr_destroy(mr_t mr) {
     if (mr == NULL) { errno = EINVAL; return -1; }
-    free((void *)mr->attrs.log_file);
+    free((void *)mr->attrs.log_file);   /* libero la stringa che strdup ha allocato in copy_attrs */
     free(mr);
     return 0;
 }
@@ -81,9 +82,6 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
         errno = EINVAL; return -1;
     }
 
-    /* === FIX BUG 1: TUTTE le variabili dichiarate qui, PRIMA di
-     * qualsiasi cosa che possa fare goto cleanup. Cosi' anche se
-     * log_init() fallisce subito, il cleanup vede valori validi. === */
     int   ret                  = -1;
     int   out_fd               = -1;
     int   main_to_mapper[2]    = { -1, -1 };
@@ -94,8 +92,8 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
     file_input_t *fi           = NULL;
     char  sem_name[64];
 
-    /* === Setup logging === */
-    snprintf(sem_name, sizeof sem_name, "/mr_log_%d", (int)getpid());
+    /* Setup logging */
+    snprintf(sem_name, sizeof sem_name, "/mr_log_%d", (int)getpid()); /* includo il pid nel nome del semaforo per unicità (diverso per istanza) */
     if (log_init(mr->attrs.log_file, sem_name, "main") == -1) goto cleanup;
 
     log_event("MR_START",
@@ -105,9 +103,7 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
               mr->attrs.queue_size);
 
     /* === 1. Apri il file di output === */
-    out_fd = open(output_path,
-                  O_WRONLY | O_CREAT | O_TRUNC,
-                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    out_fd = open(output_path, O_WRONLY | O_CREAT | O_TRUNC, 0644); 
     if (out_fd == -1) goto cleanup;
     log_event("OUTPUT_OPEN", "path=%s fd=%d", output_path, out_fd);
 
@@ -147,14 +143,13 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
 
         log_set_proc_name("mapper");
         log_event("PROC_START", NULL);
-        int rc = mapper_process_main(&mctx);
+        int rc = mapper_process_main(&mctx); /* chiamo la funzione che il processo mapper eseguirà */
         log_event("PROC_END", "rc=%d", rc);
-        log_cleanup(0);
+        log_cleanup(0);                      /* log_cleanup prende 0 come argomento per non distruggere il semaforo */
 
         _exit(rc == 0 ? 0 : 1);
     }
 
-    /* === FIX BUG 3: log SOLO nel padre, dopo il _exit del figlio === */
     log_event("FORK_MAPPER", "pid=%d", (int)mapper_pid);
 
     /* === 4. fork del processo REDUCER === */
@@ -204,7 +199,7 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
         size_t lines_sent = 0;
         mr_file_line_t line;
         int r;
-        while ((r = file_input_next(fi, &line)) == 1) {
+        while ((r = file_input_next(fi, &line)) == 1) {   /* se file_input_next ritorna 1, c'è ancora una riga da leggere. 0 è EOF, -1 errore*/
             if (protocol_write_line(main_to_mapper[1], &line) == -1) goto cleanup;
             lines_sent++;
         }
@@ -217,10 +212,10 @@ int mr_start(mr_t mr, const char *input_path, const char *output_path) {
 
     /* === 9. Loop risultati dal reducer -> file output === */
     {
-        char buf[4096];
+        char buf[4096]; /* 4KB buffer */
         ssize_t n;
         while ((n = read(reducer_to_main[0], buf, sizeof buf)) > 0) {
-            if (writen(out_fd, buf, (size_t)n) == -1) goto cleanup;
+            if (writen(out_fd, buf, (size_t)n) == -1) goto cleanup; /* scrivo i dati letti dal reducer nel file di output */
         }
         if (n == -1) goto cleanup;
     }
@@ -263,7 +258,7 @@ cleanup:
     if (out_fd != -1) close(out_fd);
 
     log_event("MR_END", "ret=%d", ret);
-    log_cleanup(1);
+    log_cleanup(1); /* distruggo il semaforo */
 
     return ret;
 }

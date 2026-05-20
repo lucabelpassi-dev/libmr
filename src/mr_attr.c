@@ -18,8 +18,6 @@
 #define MR_DEFAULT_MAPPER_THREADS   ((size_t)4)
 #define MR_DEFAULT_REDUCER_THREADS  ((size_t)4)
 #define MR_DEFAULT_QUEUE_SIZE       ((size_t)64)
-/* log_file di default = NULL: il framework usera' "mr.log" o quanto
- * documentato in src/log.c. */
 
 int mr_attr_init(mr_attr_t *attr) {
     if (attr == NULL) {
@@ -30,6 +28,7 @@ int mr_attr_init(mr_attr_t *attr) {
     attr->reducer_threads = MR_DEFAULT_REDUCER_THREADS;
     attr->queue_size      = MR_DEFAULT_QUEUE_SIZE;
     attr->log_file        = NULL;
+    /* log_file di default = NULL: il framework usera' "mr.log" o quanto documentato in src/log.c. */
     return 0;
 }
 
@@ -38,18 +37,15 @@ int mr_attr_destroy(mr_attr_t *attr) {
         errno = EINVAL;
         return -1;
     }
-    /* free() su NULL e' un no-op, quindi e' safe anche se non e' mai
-     * stato chiamato set_log_file().
-     *
-     * Il cast (void *) rimuove il const dichiarato nella struct
-     * pubblica: e' corretto perche' la memoria e' effettivamente di
+    /* Il cast (void *) che segue rimuove il const dichiarato nella struct
+     * pubblica: è corretto perche' la memoria è effettivamente di
      * proprieta' di mr_attr_t (allocata da set_log_file con strdup).
      * Il const nel typedef serve a impedire modifiche dall'ESTERNO,
      * non a negarne la proprieta'. */
     free((void *)attr->log_file);
 
     /* Reset dei campi per invalidare un eventuale uso accidentale
-     * dopo destroy (defensive programming). */
+     * dopo destroy */
     attr->log_file        = NULL;
     attr->mapper_threads  = 0;
     attr->reducer_threads = 0;

@@ -13,7 +13,7 @@ SRCS = $(wildcard $(SRC_DIR)/*.c)
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 TARGET = $(LIB_DIR)/libmr.a
 
-.PHONY: all lib examples test clean
+.PHONY: all lib examples test clean relazione zip domande
 
 # Default: libreria + esempi (così `make` da solo produce qualcosa di eseguibile)
 all: lib examples
@@ -39,7 +39,6 @@ clean:
 	rm -rf $(BUILD_DIR)/* $(LIB_DIR)/*
 	@$(MAKE) -C $(EXAMPLES_DIR) clean 2>/dev/null || true
 	@$(MAKE) -C $(TESTS_DIR) clean 2>/dev/null || true
-	rm -f mr.log doc/relazione.pdf
 	@echo "🧹 Pulizia completata"
 
 # Rigenerare relazione.pdf dal markdown
@@ -47,7 +46,20 @@ relazione: doc/relazione.md
 	pandoc doc/relazione.md -o doc/relazione.pdf \
 		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
 
-# DA RIMUOVERE 
-domande: ../domande/domande-orale.md
-	pandoc ../domande/domande-orale.md -o ../domande/domande-orale.pdf \
+zip: clean
+	@echo "Creazione zip pulito..."
+	@cd .. && zip -r belpassi_libmr.zip $(notdir $(CURDIR)) \
+		-x '$(notdir $(CURDIR))/.git/*' \
+		-x '$(notdir $(CURDIR))/.git' \
+		-x '$(notdir $(CURDIR))/**/.DS_Store' \
+		-x '$(notdir $(CURDIR))/mr.log' \
+		-x '$(notdir $(CURDIR))/**/mr.log' \
+		-x '$(notdir $(CURDIR))/**/*.o' \
+		-x '$(notdir $(CURDIR))/**/*.a'
+	@echo "Zip creato: ../belpassi_libmr.zip"
+	@ls -lh ../belpassi_libmr.zip
+
+# DA RIMUOVERE
+domande: ../schemi/domande-orale.md
+	pandoc ../schemi/domande-orale.md -o ../schemi/domande-orale.pdf \
 		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc

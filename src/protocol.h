@@ -58,16 +58,16 @@ typedef struct {
 } mr_line_msg_t;
 
 typedef struct {
-    char  *token;     /* allocato, NUL-terminato */
+    char  *token;                /* allocato, NUL-terminato */
     size_t token_len;
-    void  *value;     /* allocato, opaco */
+    void  *value;                /* allocato, opaco */
     size_t value_size;
 } mr_pair_msg_t;
 
 typedef struct {
-    char  *token;     /* allocato, NUL-terminato */
+    char  *token;                /* allocato, NUL-terminato */
     size_t token_len;
-    void  *result;    /* allocato, opaco */
+    void  *result;               /* allocato, opaco */
     size_t result_size;
 } mr_result_msg_t;
 

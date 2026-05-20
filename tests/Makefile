@@ -1,5 +1,4 @@
 CC = gcc
-# Qui sì che vediamo ../src — i test unitari accedono agli header interni
 CFLAGS = -Wall -Wextra -std=c11 -D_POSIX_C_SOURCE=200809L -I../include -I../src -pthread
 LIB_DIR = ../lib
 LDFLAGS = -L$(LIB_DIR) -pthread
