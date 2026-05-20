@@ -1,7 +1,5 @@
 /* src/mapper_proc.c
- *
  * Processo mapper: 1 thread lettore + N thread worker + 1 coda interna.
- * Spec di riferimento: §6.1.
  */
 
 #include "mapper_proc.h"
@@ -114,7 +112,8 @@ static int mapper_worker_main(void *arg) {
             .line_len      = msg->line_len,
         };
 
-        int rc = st->mapper_fn(&line, mapper_emit, st, st->user_arg); /* chiamata alla mapper function dell'utente */
+        /* chiamata alla mapper function dell'utente */
+        int rc = st->mapper_fn(&line, mapper_emit, st, st->user_arg); 
 
         protocol_line_msg_free(msg);
         free(msg);

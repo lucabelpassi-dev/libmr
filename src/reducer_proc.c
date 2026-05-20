@@ -9,7 +9,6 @@
  *   FASE 3: il main thread flusha i buffer in ordine lessicografico
  *           sulla pipe verso il processo principale.
  *
- * Spec di riferimento: §6.2, §8.
  */
 
 #include "reducer_proc.h"
@@ -115,16 +114,19 @@ static int reducer_emit(const char *token,
         *ec->cap_p = new_cap;
     }
 
+    /* memcpy per header, byte del token e byte del risultato */
     char *dst = *ec->buf_p + *ec->len_p;
     memcpy(dst, &hdr, sizeof hdr);                       dst += sizeof hdr;
     memcpy(dst, token, token_len);                       dst += token_len;
     if (result_size > 0) memcpy(dst, result, result_size);
-    *ec->len_p += total;
+    *ec->len_p += total; // aggiorno la lunghezza usata del buffer 
 
+    /* aumento il contatore dei risultati (per RESULTS_EMITTED nel log) */
     atomic_fetch_add(ec->results_counter, 1);
     return 0;
 }
 
+/* Funzione del reader thread */
 static int reducer_reader_main(void *arg) {
     struct reducer_state *st = (struct reducer_state *)arg;
     int ret = 0;
@@ -135,8 +137,8 @@ static int reducer_reader_main(void *arg) {
     for (;;) {
         mr_pair_msg_t pair;
         int r = protocol_read_pair(STDIN_FILENO, &pair);
-        if (r == 0) break;
-        if (r == -1) { ret = 1; break; }
+        if (r == 0) break;                                  // EOF
+        if (r == -1) { ret = 1; break; }                    // errore
 
         int ins = group_table_insert(st->table,
                                      pair.token, pair.token_len,
@@ -149,6 +151,7 @@ static int reducer_reader_main(void *arg) {
     return ret;
 }
 
+/* Funzione dei worker threads */
 static int reducer_worker_main(void *arg) {
     struct worker_args  *a  = (struct worker_args *)arg;
     struct reducer_state *st = a->state;
@@ -158,13 +161,15 @@ static int reducer_worker_main(void *arg) {
     log_set_thread_name(thread_name);
     log_event("THREAD_START", NULL);
 
+    /* loop con contatore atomico */
     int my_ret = 0;
     for (;;) {
         size_t i = atomic_fetch_add(&st->next_entry_idx, 1);
-        if (i >= st->entries_count) break;
+        if (i >= st->entries_count) break;  // esce se il worker si prende un indice fuori range
 
         group_entry_t *entry = st->entries[i];
 
+        /* costruisco contesto per ogni entry */
         struct reducer_emit_ctx ec = {
             .buf_p           = &st->out_buffers[i],
             .len_p           = &st->out_buffer_lens[i],
@@ -172,6 +177,7 @@ static int reducer_worker_main(void *arg) {
             .results_counter = &st->results_count,
         };
 
+        /* chiamata alla reader function dell'utente */
         int rc = st->reducer_fn(entry->token,
                                 entry->values, entry->values_count,
                                 reducer_emit, &ec,
@@ -183,6 +189,7 @@ static int reducer_worker_main(void *arg) {
     return my_ret;
 }
 
+/* Funzione principale del processo reducer */
 int reducer_process_main(struct reducer_ctx *ctx) {
     if (ctx == NULL || ctx->reducer == NULL || ctx->num_threads == 0) {
         return 1;
@@ -267,6 +274,7 @@ int reducer_process_main(struct reducer_ctx *ctx) {
     log_event("RESULTS_EMITTED", "count=%zu", atomic_load(&state.results_count));
 
 cleanup:
+    /* state.out_buffers è array di puntatori, libero prima gli elementi e poi l'array stesso */
     if (state.out_buffers != NULL) {
         for (size_t i = 0; i < state.entries_count; i++) {
             free(state.out_buffers[i]);
