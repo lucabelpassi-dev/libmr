@@ -2,7 +2,7 @@
 #define GROUP_TABLE_H
 
 #include <stddef.h>
-#include "mr.h"  /* per mr_value_t */
+#include "mr.h"  
 
 /* Tipo opaco della tabella: il consumatore non vede i campi interni. */
 typedef struct group_table group_table_t;
@@ -39,8 +39,8 @@ void group_table_destroy(group_table_t *t);
  * del valore (memcpy). Il chiamante puo' liberare/riusare i propri
  * buffer subito dopo il ritorno.
  *
- * Se il token e' nuovo: viene creata una nuova entry.
- * Se il token esiste gia': il valore viene aggiunto in fondo alla
+ * Se il token è nuovo: viene creata una nuova entry.
+ * Se il token esiste già: il valore viene aggiunto in fondo alla
  * sua lista, preservando l'ordine di inserimento.
  *
  * Ritorna 0 in caso di successo, -1 in caso di errore (errno impostato). */
@@ -59,8 +59,8 @@ int group_table_insert(group_table_t *t,
  *   *out_entries: array malloc'd di puntatori a group_entry_t.
  *                 Il chiamante deve liberarlo con free().
  *                 Le entry puntate restano della tabella.
- *                 In caso di tabella vuota e' NULL.
- *   *out_count:   numero di entry distinte (puo' essere 0).
+ *                 In caso di tabella vuota è NULL.
+ *   *out_count:   numero di entry distinte (può essere 0).
  *
  * Ritorna 0 su successo, -1 su errore (errno impostato).
  * Va chiamata UNA SOLA VOLTA, dopo che tutti gli insert sono terminati. */
