@@ -12,11 +12,11 @@ typedef struct q_node {
 
 // struttura della Coda Sincronizzata
 typedef struct {
-    q_node_t *head; // punta al primo nodo (il più vecchio)
-    q_node_t *tail; // punta all'ultimo nodo (il più nuovo). è dove inseriremo i nuovi dati, ci serve per evitare di scorrere tutta la lista ogni volta che vogliamo pushare un nuovo elemento
-    mtx_t mutex;       // il lucchetto per l'accesso esclusivo
-    cnd_t cond;        // la variabile di condizione per "svegliare" i worker o farli dormire se non c'è lavoro da fare
-    int is_closed;    // flag vitale: dice ai worker se sono finiti i dati (possono smettere di lavorare!). il produttore chiama queue_close(), imposta questo int a 1 (true), lancia un cnd_broadcast() per svegliare tutti i worker, e quando i worker si svegliano, se vedono che is_closed è true e la coda è vuota, capiscono che è finito il lavoro e possono uscire
+    q_node_t *head;     // punta al primo nodo (il più vecchio)
+    q_node_t *tail;     // punta all'ultimo nodo (il più nuovo). è dove inseriremo i nuovi dati, ci serve per evitare di scorrere tutta la lista ogni volta che vogliamo pushare un nuovo elemento
+    mtx_t mutex;        // il lucchetto per l'accesso esclusivo
+    cnd_t cond;         // la variabile di condizione per "svegliare" i worker o farli dormire se non c'è lavoro da fare
+    int is_closed;      // flag vitale: dice ai worker se sono finiti i dati (possono smettere di lavorare!). il produttore chiama queue_close(), imposta questo int a 1 (true), lancia un cnd_broadcast() per svegliare tutti i worker, e quando i worker si svegliano, se vedono che is_closed è true e la coda è vuota, capiscono che è finito il lavoro e possono uscire
 } thread_queue_t;
 
 // funzioni pubbliche della coda
