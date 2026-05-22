@@ -44,6 +44,5 @@ int main(int argc, char **argv) {
     }
     mr_destroy(mr);
     mr_attr_destroy(&attr);
-    printf("smoke: OK\n");
     return 0;
 }
