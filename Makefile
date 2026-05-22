@@ -58,8 +58,3 @@ zip: clean
 		-x '$(notdir $(CURDIR))/**/*.a'
 	@echo "Zip creato: ../belpassi_libmr.zip"
 	@ls -lh ../belpassi_libmr.zip
-
-# DA RIMUOVERE
-domande: ../schemi/domande-orale.md
-	pandoc ../schemi/domande-orale.md -o ../schemi/domande-orale.pdf \
-		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
