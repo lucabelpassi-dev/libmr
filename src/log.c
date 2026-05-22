@@ -22,13 +22,13 @@
 #include <unistd.h>
 
 /* ===== Stato globale (per processo) ===== */
-static int    g_log_fd        = -1;
-static sem_t *g_log_sem       = SEM_FAILED;
-static char   g_sem_name[64]  = "";
-static char   g_proc_name[16] = "main";
+static int    g_log_fd        = -1;                 /* fd del file di log */
+static sem_t *g_log_sem       = SEM_FAILED;         /* puntatore al semaforo */
+static char   g_sem_name[64]  = "";                 /* nome del semaforo (per unlink) */
+static char   g_proc_name[16] = "main";             /* nome del processo (per log) */
 
 /* ===== Stato per-thread (TLS) ===== */
-static _Thread_local char g_thread_name[32] = "-";
+static _Thread_local char g_thread_name[32] = "-";  /* Nome del thread (per log). Ciascun thread non vede il nome degli altri thread */
 
 /* ===== API pubblica ===== */
 
