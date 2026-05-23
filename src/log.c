@@ -37,12 +37,12 @@ int log_init(const char *log_path, const char *sem_name, const char *proc_name) 
         errno = EINVAL; return -1;
     }
 
+    /* Salvataggio dei nomi */
     snprintf(g_sem_name,  sizeof g_sem_name,  "%s", sem_name);
     snprintf(g_proc_name, sizeof g_proc_name, "%s", proc_name);
 
-    /* Apri il file di log: O_APPEND garantisce che ogni write si
-     * posizioni atomicamente in fondo. O_TRUNC lo svuota a inizio
-     * esecuzione (vogliamo log fresco per ogni mr_start). */
+    /* Apertura del file di log: O_APPEND garantisce che ogni write si
+     * posizioni atomicamente in fondo. */
     const char *path = log_path ? log_path : "mr.log";
     g_log_fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_TRUNC, 0644);
     if (g_log_fd == -1) return -1;
@@ -50,7 +50,7 @@ int log_init(const char *log_path, const char *sem_name, const char *proc_name) 
     /* Crea il semaforo named, valore iniziale 1 (= mutex).
      * Se per qualche motivo esiste gia' (es. crash precedente non
      * pulito), lo rimuoviamo e ricreiamo. */
-    g_log_sem = sem_open(sem_name, O_CREAT | O_EXCL, 0600, 1);
+    g_log_sem = sem_open(sem_name, O_CREAT | O_EXCL, 0600, 1); // 0600 rw per owner, niente per altri
     if (g_log_sem == SEM_FAILED && errno == EEXIST) {
         sem_unlink(sem_name);
         g_log_sem = sem_open(sem_name, O_CREAT | O_EXCL, 0600, 1);
@@ -74,11 +74,11 @@ void log_set_thread_name(const char *name) {
 }
 
 void log_event(const char *event, const char *fmt, ...) {
-    if (g_log_fd == -1 || g_log_sem == SEM_FAILED) return;  /* non-init: noop */
+    if (g_log_fd == -1 || g_log_sem == SEM_FAILED) return;  
 
     char line[512];
 
-    /* Timestamp con millisecondi (localtime_r e' thread-safe). */
+    /* Timestamp con millisecondi (localtime_r è thread-safe). */
     struct timeval tv;
     gettimeofday(&tv, NULL);
     struct tm tm;
@@ -89,8 +89,8 @@ void log_event(const char *event, const char *fmt, ...) {
         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
         tm.tm_hour, tm.tm_min, tm.tm_sec, tv.tv_usec / 1000,
         g_proc_name, g_thread_name, event ? event : "-");
-    if (n < 0) return;
-    if (n > (int)sizeof line - 2) n = sizeof line - 2;
+    if (n < 0) return;                                  // errore di snprintf
+    if (n > (int)sizeof line - 2) n = sizeof line - 2;  // troncamento 
 
     /* Corpo del messaggio (opzionale) */
     if (fmt != NULL && fmt[0] != '\0') {
@@ -107,7 +107,7 @@ void log_event(const char *event, const char *fmt, ...) {
     /* Sezione critica: solo una write per volta sul fd di log. */
     if (sem_wait(g_log_sem) == 0) {
         ssize_t w = write(g_log_fd, line, (size_t)n);
-        (void)w;
+        (void)w;    // fix warning -Wunused-result
         sem_post(g_log_sem);
     }
 }
