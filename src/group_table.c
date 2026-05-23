@@ -3,8 +3,8 @@
  * Tabella di hash con catene lineari per il raggruppamento dei valori
  * per token nel processo reducer.
  *
- * Non thread-safe: il pattern d'uso e' "un thread inserisce, chiama
- * finalize, e DOPO piu' thread leggono in sola lettura".
+ * Non thread-safe: il pattern d'uso è "un thread inserisce, chiama
+ * finalize, e DOPO più thread leggono in sola lettura".
  *
  * Spec di riferimento: §6.2 (Processo reducer), §8 (Output deterministico).
  */
@@ -26,7 +26,7 @@ typedef struct value_node {
 } value_node_t;
 
 struct group_table {
-    group_entry_t **buckets;
+    group_entry_t **buckets;        /* array di puntatori a entry */
     size_t          num_buckets;
     size_t          num_entries;
 };
@@ -37,8 +37,8 @@ struct group_table {
 static uint32_t fnv1a_hash(const char *data, size_t len) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < len; i++) {
-        h ^= (uint8_t)data[i];
-        h *= 16777619u;
+        h ^= (uint8_t)data[i];  /* XOR del byte corrente */
+        h *= 16777619u;         /* moltiplica per la costante FNV */
     }
     return h;
 }
@@ -123,10 +123,10 @@ static int compare_entry_ptrs(const void *a, const void *b) {
 group_table_t *group_table_create(size_t num_buckets) {
     if (num_buckets == 0) { errno = EINVAL; return NULL; }
 
-    group_table_t *t = calloc(1, sizeof(*t));
+    group_table_t *t = calloc(1, sizeof(*t));                       /* calloc per la struct */
     if (t == NULL) return NULL;
 
-    t->buckets = calloc(num_buckets, sizeof(group_entry_t *));
+    t->buckets = calloc(num_buckets, sizeof(group_entry_t *));      /* calloc per i bucket, inizializzati a NULL */
     if (t->buckets == NULL) { free(t); return NULL; }
 
     t->num_buckets = num_buckets;
@@ -144,8 +144,8 @@ void group_table_destroy(group_table_t *t) {
             group_entry_t *next_e = e->_next;
 
             /* Libera i valori. Due casi a seconda di se finalize
-             * e' stata chiamata:
-             *  - finalize chiamata: e->values e' l'array; i suoi
+             * è stata chiamata:
+             *  - finalize chiamata: e->values è l'array; i suoi
              *    elementi puntano ai buffer dei valori.
              *  - finalize NON chiamata: i valori sono nella lista
              *    concatenata interna. */
@@ -219,8 +219,8 @@ int group_table_finalize(group_table_t *t,
     /* 2. Per ogni entry: "appiattisci" la lista valori in array
      *    contiguo, e raccogli il puntatore nell'array globale */
     size_t idx = 0;
-    for (size_t i = 0; i < t->num_buckets; i++) {
-        for (group_entry_t *e = t->buckets[i]; e != NULL; e = e->_next) {
+    for (size_t i = 0; i < t->num_buckets; i++) {                           /* scorro i bucket */
+        for (group_entry_t *e = t->buckets[i]; e != NULL; e = e->_next) {   /* scorro le entry nel bucket */
 
             /* Appiattimento: alloca array di values_count elementi,
              * trasferisci i puntatori data dai nodi della lista. */
@@ -240,15 +240,16 @@ int group_table_finalize(group_table_t *t,
                     free(n);  /* libera il nodo, NON n->data (trasferito) */
                     n = next_n;
                 }
+                /* cancello esplicitamente head e tail, così distingui i casi in group_table_destroy */
                 e->_values_head = NULL;
                 e->_values_tail = NULL;
             }
 
-            arr[idx++] = e;
+            arr[idx++] = e; // alla fine, idx == t->num_entries 
         }
     }
 
-    /* 3. Ordina l'array per token (lessicografico) */
+    /* 3. Ordina l'array per token (lessicografico). O(NlogN), in place. */
     qsort(arr, t->num_entries, sizeof(group_entry_t *), compare_entry_ptrs);
 
     *out_entries = arr;

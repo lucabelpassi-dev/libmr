@@ -43,24 +43,79 @@ L'output del build è:
 - `lib/libmr.a` — la libreria statica
 - `examples/wordcount`, `examples/smoke`, `examples/print_output` — eseguibili di esempio
 
-## Utilizzo: l'esempio canonico
+## Utilizzo: esecuzione manuale degli esempi
 
-Il programma `wordcount` legge un file di testo (o tutti i file regolari in una
-directory) e produce in output il conteggio delle parole alfanumeriche
-incontrate.
+Il framework include due esempi che usano `libmr.a` come libreria
+statica: `wordcount` (conta le occorrenze di ogni parola alfanumerica
+nel file di input) e `smoke` (test minimale di sanità).
+Lo strumento `print_output` permette di decodificare in chiaro il file
+di output binario.
+
+### Wordcount: il caso d'uso canonico
 
 ```sh
 make
-echo "hello world hello" > /tmp/in.txt
-./examples/wordcount /tmp/in.txt /tmp/out.bin
-./examples/print_output /tmp/out.bin
-# hello   2
-# world   1
+echo "il gatto sul tetto. il gatto miagola." > /tmp/test.txt
+./examples/wordcount /tmp/test.txt /tmp/output.bin
+./examples/print_output /tmp/output.bin
+# Atteso:
+#   gatto    2
+#   il       2
+#   miagola  1
+#   sul      1
+#   tetto    1
 ```
 
-Il file di output è in formato binario length-prefixed. Lo strumento
-`print_output` lo decodifica e stampa una rappresentazione testuale
-`token<TAB>valore` per riga.
+I due argomenti di `wordcount` sono il percorso del file di input
+(o di una directory contenente piu' file regolari) e il percorso del
+file di output. L'output viene prodotto in formato binario
+length-prefixed e va decodificato con `print_output`.
+
+### Sull'estensione del file di output
+
+Il framework scrive byte sul file, indipendentemente dall'estensione.
+Convenzionalmente si usa `.bin` per rendere evidente che il file e'
+binario. Aprire il file con un editor di testo mostrera' parti
+leggibili (i token alfanumerici) e parti non stampabili (le lunghezze
+e i valori binari): e' atteso. Per ispezionare il contenuto byte
+per byte usare `xxd` o `hexdump`.
+
+### Input come directory
+
+Se il primo argomento e' una directory, il framework legge in ordine
+lessicografico tutti i file regolari contenuti, processandoli come
+se fossero concatenati:
+
+```sh
+mkdir -p /tmp/inputs
+echo "alpha beta"   > /tmp/inputs/a.txt
+echo "alpha gamma"  > /tmp/inputs/b.txt
+./examples/wordcount /tmp/inputs /tmp/output.bin
+./examples/print_output /tmp/output.bin
+# alpha    2
+# beta     1
+# gamma    1
+```
+
+### Smoke test minimale
+
+Lo stesso pattern vale per il programma `smoke`, utile per verificare
+rapidamente la pipeline su un input piccolo:
+
+```sh
+echo "ciao mondo" > /tmp/smoke.txt
+./examples/smoke /tmp/smoke.txt /tmp/smoke_out.bin
+./examples/print_output /tmp/smoke_out.bin
+```
+
+### Ispezione del log
+
+Ogni esecuzione produce un file `mr.log` nella directory di lavoro
+corrente (cwd). Le righe sono ordinabili cronologicamente:
+
+```sh
+sort mr.log
+```
 
 ## Logging
 

@@ -3,12 +3,21 @@
 #include "queue.h"
 
 // Inizializza la coda vuota e crea i mutex/cond
-void queue_init(thread_queue_t *q) {
+int queue_init(thread_queue_t *q) {
     q->head = NULL;
     q->tail = NULL;
     q->is_closed = 0;
-    mtx_init(&q->mutex, mtx_plain);
-    cnd_init(&q->cond);
+
+    if (mtx_init(&q->mutex, mtx_plain) != thrd_success) {
+        return -1;
+    }
+
+    if (cnd_init(&q->cond) != thrd_success) {
+        mtx_destroy(&q->mutex);   /* rollback: libero il mutex appena creato */
+        return -1;
+    }
+
+    return 0;
 }
 
 // Il Produttore aggiunge un elemento alla coda
@@ -21,10 +30,10 @@ void queue_push(thread_queue_t *q, mr_value_t value) {
     new_node->data = value;
     new_node->next = NULL;
 
-    // 2. Chiudiamo il lucchetto! Nessun altro può toccare la coda ora.
+    // chiudiamo il lucchetto! Nessun altro può toccare la coda ora.
     mtx_lock(&q->mutex);
 
-    // 3. Inseriamo il nodo
+    // inseriamo il nodo
     if (q->tail == NULL) { // Coda vuota
         q->head = new_node;
         q->tail = new_node;
@@ -33,10 +42,10 @@ void queue_push(thread_queue_t *q, mr_value_t value) {
         q->tail = new_node;
     }
 
-    // 4. Svegliamo ALMENO UN thread worker che stava dormendo
+    // svegliamo ALMENO UN thread worker che stava dormendo
     cnd_signal(&q->cond);
 
-    // 5. Rilasciamo il lucchetto
+    // rilasciamo il lucchetto
     mtx_unlock(&q->mutex);
 }
 
@@ -44,37 +53,37 @@ void queue_push(thread_queue_t *q, mr_value_t value) {
 int queue_pop(thread_queue_t *q, mr_value_t *out_value) {
     mtx_lock(&q->mutex);
 
-    // Se la coda è vuota ma NON è chiusa, il worker si mette a dormire aspettando dati
+    // se la coda è vuota ma NON è chiusa, il worker si mette a dormire aspettando dati
     while (q->head == NULL && !q->is_closed) {
         cnd_wait(&q->cond, &q->mutex);
     }
 
-    // Se ci svegliamo e la coda è vuota E chiusa, significa che abbiamo finito il lavoro
+    // se ci svegliamo e la coda è vuota E chiusa, significa che abbiamo finito il lavoro
     if (q->head == NULL && q->is_closed) {
         mtx_unlock(&q->mutex);
         return 0; 
     }
 
-    // Altrimenti, prendiamo l'elemento in cima (head)
+    // altrimenti, prendiamo l'elemento in cima (head)
     q_node_t *temp = q->head;
     *out_value = temp->data;
     
     q->head = q->head->next;
     if (q->head == NULL) {
-        q->tail = NULL; // La coda è tornata vuota
+        q->tail = NULL; // la coda è tornata vuota
     }
 
     mtx_unlock(&q->mutex);
-    free(temp); // Puliamo la memoria del nodo
+    free(temp); // puliamo la memoria del nodo
     
-    return 1; // Abbiamo pescato con successo
+    return 1; // abbiamo pescato con successo
 }
 
 // Chiude la coda (non accetta più dati) e sveglia tutti i worker addormentati
 void queue_close(thread_queue_t *q) {
     mtx_lock(&q->mutex);
     q->is_closed = 1;
-    cnd_broadcast(&q->cond); // SVEGLIA TUTTI! È l'ora di chiudere.
+    cnd_broadcast(&q->cond); // sveglia tutti
     mtx_unlock(&q->mutex);
 }
 
@@ -92,16 +101,3 @@ void queue_destroy(thread_queue_t *q) {
     mtx_destroy(&q->mutex);
     cnd_destroy(&q->cond);
 }
-
-// destroy importante
-/*
-    la coda è un trasportatore. il produttore alloca il buffer, lo "regala" alla coda con push, 
-    il consumatore lo "ritira" con pop e diventa responsabile di liberarlo.
-    In condizioni normali la coda è vuota quando viene distrutta — perfetto.
-    Ma se per qualche motivo viene distrutta non-vuota (terminazione anomala, errore, segnale),
-    nessuno libera quei buffer abbandonati. Il destroy deve quindi farsi carico della pulizia dei
-    "residui": questa è la regola "chi possiede, libera" applicata in modo difensivo.
-    Se invece il prof ti chiede "e i buffer dentro mr_value_t chi li libera in condizioni normali?",
-    la risposta è: il consumatore dopo aver chiamato pop, non la coda. La coda li libera solo come
-    fail-safe in destroy.
- */

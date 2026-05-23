@@ -166,7 +166,10 @@ int mapper_process_main(struct mapper_ctx *ctx) {
     }
 
     thread_queue_t queue;
-    queue_init(&queue);
+    if (queue_init(&queue) == -1) {
+        free(workers); free(wargs);
+        return 1;
+    }
 
     struct mapper_state state = {
         .queue      = &queue,

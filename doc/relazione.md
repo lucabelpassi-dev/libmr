@@ -437,6 +437,19 @@ atteso scritto a mano. Ognuno dei sei casi è motivato da un requisito
 puntualmente nominato dalla specifica (§4 per i casi limite di input, §8 per
 il determinismo).
 
+### Esecuzione manuale
+
+Oltre ai test, gli esempi forniti possono essere eseguiti
+manualmente per verificare il comportamento del framework su input
+arbitrari scelti dall'utente. La sequenza canonica, descritta nel
+README, prevede la compilazione (`make`), la preparazione di un
+file di input testuale, l'invocazione di `wordcount` o `smoke` con
+i percorsi di input e di output, e la decodifica del file di output
+binario tramite il programma ausiliario `print_output`. Questa
+modalita' di esecuzione e' utile sia in fase di sviluppo, sia per
+ispezionare il file di log prodotto, sia come strumento di
+discussione interattiva.
+
 # Conclusioni
 
 Il progetto realizza interamente le funzionalità richieste dalla specifica:
