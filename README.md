@@ -145,11 +145,4 @@ make test
 ## Documentazione
 
 La relazione completa (architettura, scelte progettuali, formati, test) si
-trova in `doc/relazione.md`. Per generare la versione PDF:
-
-```sh
-pandoc doc/relazione.md -o doc/relazione.pdf \
-    --pdf-engine=xelatex \
-    -V geometry:margin=2.5cm \
-    --toc
-```
+trova in `doc/relazione.pdf`
