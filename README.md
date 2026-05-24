@@ -18,7 +18,7 @@ progetto/
 ├── src/                  Sorgenti della libreria
 ├── examples/             Esempi di utilizzo (smoke, wordcount, print_output)
 ├── tests/                Test unitari e end-to-end
-├── doc/relazione.md      Relazione del progetto
+├── doc/relazione.pdf      Relazione del progetto
 ├── Makefile              Build orchestrator
 └── README.md             Questo file
 ```
