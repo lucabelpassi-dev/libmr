@@ -13,7 +13,7 @@ SRCS = $(wildcard $(SRC_DIR)/*.c)
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(SRCS))
 TARGET = $(LIB_DIR)/libmr.a
 
-.PHONY: all lib examples test clean relazione zip domande
+.PHONY: all lib examples test clean relazione zip 
 
 # Default: libreria + esempi (così `make` da solo produce qualcosa di eseguibile)
 all: lib examples
