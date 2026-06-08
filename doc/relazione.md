@@ -115,9 +115,8 @@ richiede (Appendice A): una *struct* `mr_attr_t` per la configurazione, un
 tipo opaco `mr_t` per la sessione, e quattro funzioni. La separazione fra i
 due tipi non è casuale.
 
-**`mr_attr_t` è esposta.** Contiene 12 campi pubblicamente accessibili: i
-numeri di thread, le dimensioni delle code, i percorsi di input e output, e
-così via. È esposta perché il chiamante deve poterla allocare nello stack,
+**`mr_attr_t` è esposta.** Contiene 4 campi pubblicamente accessibili: `mapper_threads`,
+`reducer_threads`, `queue_size`, `log_file`. È esposta perché il chiamante deve poterla allocare nello stack,
 inizializzarla, modificarne i campi con i setter, e infine distruggerla.
 Esporre la struttura permette l'uso "C-idiomatico" di una configurazione
 fatta inizializzando la struct sullo stack.
@@ -257,19 +256,17 @@ serializzazione cross-process (per il log) si usa un semaforo POSIX named
 
 # Coda thread-safe e protocollo IPC
 
-La struttura `mr_queue_t` (in `src/queue.c`) è una coda *bounded* di puntatori
+La struttura `mr_queue_t` (in `src/queue.c`) è una coda *unbounded* di puntatori
 opachi, thread-safe, con semantica di chiusura:
 
-- un *producer* esegue `queue_push(q, item)`; se la coda è piena, attende su
-  una variabile di condizione;
+- un *producer* esegue `queue_push(q, item)`;
 - un *consumer* esegue `queue_pop(q, &item)`; se la coda è vuota e non
   chiusa, attende; se vuota e chiusa, riceve un codice di terminazione;
 - `queue_close(q)` segnala "non arriveranno più elementi", e fa
   `cnd_broadcast` per svegliare *tutti* i consumer in attesa, che vedranno
   la coda vuota+chiusa e termineranno.
 
-Tutto è protetto da un singolo `mtx_t` + due `cnd_t` (uno per "non più
-piena", uno per "non più vuota").
+Tutto è protetto da un singolo `mtx_t` + un `cnd_t`.
 
 Il *protocollo* di scambio fra i processi (file `src/protocol.c`) è
 **length-prefixed**: ogni messaggio è preceduto da un *header* a intero che
@@ -405,7 +402,7 @@ target principali sono:
 - `make` o `make all` — compila tutto;
 - `make test` — esegue i test unitari e quelli end-to-end;
 - `make clean` — rimuove tutti gli artefatti di build (`.o`, `.a`,
-  eseguibili, file `mr.log`, PDF della relazione).
+  eseguibili, file `mr.log`).
 
 I flag di compilazione sono `-std=c11 -Wall -Wextra -Wpedantic -O2
 -D_POSIX_C_SOURCE=200809L`. Il warning level rigoroso è una scelta di
