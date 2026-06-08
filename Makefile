@@ -46,6 +46,10 @@ relazione: doc/relazione.md
 	pandoc doc/relazione.md -o doc/relazione.pdf \
 		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
 
+schema: ../domande/schema-libmr.md
+	pandoc ../domande/schema-libmr.md -o ../domande/schema-libmr.pdf \
+		--pdf-engine=xelatex -V geometry:margin=2.5cm
+
 zip: clean
 	@echo "Creazione zip pulito..."
 	@cd .. && zip -r belpassi_libmr.zip $(notdir $(CURDIR)) \
