@@ -1,7 +1,7 @@
 # libmr
 
-Framework MapReduce a singolo nodo in C, sviluppato come progetto del corso
-**Laboratorio II A**, A.A. 2025/2026.
+Framework MapReduce a singolo nodo in C, sviluppato individualmente come
+progetto del corso **Laboratorio II A**, A.A. 2025/2026.
 
 `libmr` è una libreria statica (`libmr.a`) che permette al programma cliente di
 eseguire una computazione MapReduce specificando due funzioni di callback
@@ -141,6 +141,20 @@ input e determinismo su esecuzioni ripetute.
 ```sh
 make test
 ```
+## Limiti noti e possibili estensioni
+
+- **Singolo nodo**: l'architettura usa tre processi su una sola macchina.
+  L'estensione naturale è la distribuzione su più nodi, con uno stadio di
+  shuffle attraverso la rete.
+- **Topologia fissa**: oggi c'è un solo mapper e un solo reducer. Un parametro
+  per il numero di worker permetterebbe di scalare il parallelismo sul numero
+  di core disponibili.
+- **Nessun combiner**: una riduzione locale prima dello shuffle ridurrebbe il
+  volume di dati scambiati fra i processi.
+- **Tolleranza ai guasti assente**: un MapReduce "reale" riavvia i task falliti;
+  qui il crash di un worker termina l'intera computazione.
+- **I/O**: per input molto grandi, l'uso di memory-mapping o di una lettura a
+  stream ridurrebbe l'impronta di memoria.
 
 ## Documentazione
 
