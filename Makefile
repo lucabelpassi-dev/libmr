@@ -45,20 +45,3 @@ clean:
 relazione: doc/relazione.md
 	pandoc doc/relazione.md -o doc/relazione.pdf \
 		--pdf-engine=xelatex -V geometry:margin=2.5cm --toc
-
-schema: ../domande/schema-libmr.md
-	pandoc ../domande/schema-libmr.md -o ../domande/schema-libmr.pdf \
-		--pdf-engine=xelatex -V geometry:margin=2.5cm
-
-zip: clean
-	@echo "Creazione zip pulito..."
-	@cd .. && zip -r belpassi_libmr.zip $(notdir $(CURDIR)) \
-		-x '$(notdir $(CURDIR))/.git/*' \
-		-x '$(notdir $(CURDIR))/.git' \
-		-x '$(notdir $(CURDIR))/**/.DS_Store' \
-		-x '$(notdir $(CURDIR))/mr.log' \
-		-x '$(notdir $(CURDIR))/**/mr.log' \
-		-x '$(notdir $(CURDIR))/**/*.o' \
-		-x '$(notdir $(CURDIR))/**/*.a'
-	@echo "Zip creato: ../belpassi_libmr.zip"
-	@ls -lh ../belpassi_libmr.zip
